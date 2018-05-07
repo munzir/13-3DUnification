@@ -7,8 +7,12 @@
 
 #include <ddp/costs.hpp>
 #include <ddp/dynamics.hpp>
+#include <ddp/plant.hpp>
 #include <ddp/eigenmvn.hpp>
+//#include <QtCore>
+//#include <QVector>
 #include <fstream>
+#include <iostream>
 
 
 struct param {
@@ -61,40 +65,71 @@ struct Krang3D: public Dynamics<T, 8, 2>
         newBu(0) = 0;
     }
 
-    c_forces dynamic_forces(const Eigen::Ref<const State> &x, const Eigen::Ref<const Control> &u))
+    c_forces dynamic_forces(const Eigen::Ref<const State> &x, const Eigen::Ref<const Control> &u)
+    {
+        using std::sin; using std::cos;
+
+        xx = x(0); psii = x(1); q_imu = x(2);
+        dx = x(3); dpsi = x(4); dq_imu = x(5);
+        X0 = x(6); Y0 = x(7);
+
+        c_forces dy_forces;
+
+        dy_forces.A(0,0) = (2*YYw + R*R*m_1 + 2*R*R*mw)/(R*R);
+        dy_forces.A(0,1) = MX_1;
+        dy_forces.A(1,0) = MX_1;
+        dy_forces.A(2,2) = XX_1;
+        dy_forces.C(0,0) = 0;
+        dy_forces.C(2,0) = 0;
+        dy_forces.C(2,2) = 0;
+        dy_forces.Q(0) = 0;
+        dy_forces.Q(1) = 0;
+
+        dy_forces.A(0,2) = MY_1*cos(q_imu) + MZ_1*sin(q_imu);
+        dy_forces.A(1,1) = (L*L*YYw + 4*R*R*XXw - 2*R*R*XXw*pow(cos((2*xx + L*psii)/(2*R)), 2) - 2*R*R*XXw*pow(cos((2*xx - L*psii)/(2*R)), 2) \
+            + 2*R*R*ZZw*pow(cos((2*xx + L*psii)/(2*R)), 2) + 2*R*R*ZZw*pow(cos((2*xx - L*psii)/(2*R)), 2) + L*L*R*R*mw + 2*R*R*YY_1*pow(cos(q_imu), 2) \
+            + 2*R*R*YZ_1*sin(2*q_imu) + 2*R*R*ZZ_1*pow(sin(q_imu),2))/(2*R*R);
+        dy_forces.A(1,2) = - XY_1*cos(q_imu) - XZ_1*sin(q_imu);
+        dy_forces.A(2,0) = MY_1*cos(q_imu) + MZ_1*sin(q_imu);
+        dy_forces.A(2,1) = - XY_1*cos(q_imu) - XZ_1*sin(q_imu);
+        dy_forces.C(0,1) = -(dpsi*(XXw*sin((2*xx + L*psii)/R) + XXw*sin((2*xx - L*psii)/R) - ZZw*sin((2*xx + L*psii)/R) - ZZw*sin((2*xx - L*psii)/R) - 2*R*MZ_1*cos(q_imu) \
+            + 2*R*MY_1*sin(q_imu)))/(2*R);
+        dy_forces.C(0,2) = dq_imu*(MZ_1*cos(q_imu) - MY_1*sin(q_imu));
+        dy_forces.C(1,0) = (dpsi*(sin((2*xx + L*psii)/R)/2 + sin((2*xx - L*psii)/R)/2)*(XXw - ZZw))/R;
+        dy_forces.C(1,1) = (4*R*MY_1*sin(q_imu) - 4*R*MZ_1*cos(q_imu) + 2*dx*XXw*sin((2*xx + L*psii)/R) + 2*dx*XXw*sin((2*xx - L*psii)/R) - 2*dx*ZZw*sin((2*xx + L*psii)/R) \
+            - 2*dx*ZZw*sin((2*xx - L*psii)/R) + L*XXw*dpsi*sin((2*xx + L*psii)/R) - L*XXw*dpsi*sin((2*xx - L*psii)/R) - L*ZZw*dpsi*sin((2*xx + L*psii)/R) \
+            + L*ZZw*dpsi*sin((2*xx - L*psii)/R) + 4*R*YZ_1*dq_imu*cos(2*q_imu) - 2*R*YY_1*dq_imu*sin(2*q_imu) + 2*R*ZZ_1*dq_imu*sin(2*q_imu))/(4*R);
+        dy_forces.C(1,2) = XY_1*dq_imu*sin(q_imu) - XZ_1*dq_imu*cos(q_imu) + YZ_1*dpsi*(2*pow(cos(q_imu), 2) - 1) - YY_1*dpsi*cos(q_imu)*sin(q_imu) + ZZ_1*dpsi*cos(q_imu)*sin(q_imu);
+        dy_forces.C(2,1) = -dpsi*(YZ_1*cos(2*q_imu) - (YY_1*sin(2*q_imu))/2 + (ZZ_1*sin(2*q_imu))/2);
+        dy_forces.Q(2) = g*MZ_1*cos(q_imu) - g*MY_1*sin(q_imu);
+        dy_forces.Gamma_fric(0) = (2*fric_1*(dq_imu - dx/R))/R;
+        dy_forces.Gamma_fric(1) = -(L*L*dpsi*fric_1)/(2*R*R);
+        dy_forces.Gamma_fric(2) = -2*fric_1*(dq_imu - dx/R);
+
+//        std::cout << "A: " << dy_forces.A << std::endl;
+//        std::cout << "C: " << dy_forces.C << std::endl;
+//        std::cout << "Q: " << dy_forces.Q << std::endl;
+//        std::cout << "G: " << dy_forces.Gamma_fric << std::endl;
+
+        return dy_forces;
+    }
+
+    inline State f(const Eigen::Ref<const State> &x, const Eigen::Ref<const Control> &u)
     {
         using std::sin; using std::cos;
         // state transition = [thetadot, force, xdot, xddot]
         State xdot;
 
+        c_forces dy_forces = dynamic_forces(x, u);
+
         xx = x(0); psii = x(1); q_imu = x(2);
         dx = x(3); dpsi = x(4); dq_imu = x(5);
         X0 = x(6); Y0 = x(7);
-        A(0,2) = MY_1*cos(q_imu) + MZ_1*sin(q_imu);
-        A(1,1) = (L*L*YYw + 4*R*R*XXw - 2*R*R*XXw*pow(cos((2*xx + L*psii)/(2*R)), 2) - 2*R*R*XXw*pow(cos((2*xx - L*psii)/(2*R)), 2) \
-            + 2*R*R*ZZw*pow(cos((2*xx + L*psii)/(2*R)), 2) + 2*R*R*ZZw*pow(cos((2*xx - L*psii)/(2*R)), 2) + L*L*R*R*mw + 2*R*R*YY_1*pow(cos(q_imu), 2) \
-            + 2*R*R*YZ_1*sin(2*q_imu) + 2*R*R*ZZ_1*pow(sin(q_imu),2))/(2*R*R);
-        A(1,2) = - XY_1*cos(q_imu) - XZ_1*sin(q_imu);
-        A(2,0) = MY_1*cos(q_imu) + MZ_1*sin(q_imu);
-        A(2,1) = - XY_1*cos(q_imu) - XZ_1*sin(q_imu);
-        C(0,1) = -(dpsi*(XXw*sin((2*xx + L*psii)/R) + XXw*sin((2*xx - L*psii)/R) - ZZw*sin((2*xx + L*psii)/R) - ZZw*sin((2*xx - L*psii)/R) - 2*R*MZ_1*cos(q_imu) \
-            + 2*R*MY_1*sin(q_imu)))/(2*R);
-        C(0,2) = dq_imu*(MZ_1*cos(q_imu) - MY_1*sin(q_imu));
-        C(1,0) = (dpsi*(sin((2*xx + L*psii)/R)/2 + sin((2*xx - L*psii)/R)/2)*(XXw - ZZw))/R;
-        C(1,1) = (4*R*MY_1*sin(q_imu) - 4*R*MZ_1*cos(q_imu) + 2*dx*XXw*sin((2*xx + L*psii)/R) + 2*dx*XXw*sin((2*xx - L*psii)/R) - 2*dx*ZZw*sin((2*xx + L*psii)/R) \
-            - 2*dx*ZZw*sin((2*xx - L*psii)/R) + L*XXw*dpsi*sin((2*xx + L*psii)/R) - L*XXw*dpsi*sin((2*xx - L*psii)/R) - L*ZZw*dpsi*sin((2*xx + L*psii)/R) \
-            + L*ZZw*dpsi*sin((2*xx - L*psii)/R) + 4*R*YZ_1*dq_imu*cos(2*q_imu) - 2*R*YY_1*dq_imu*sin(2*q_imu) + 2*R*ZZ_1*dq_imu*sin(2*q_imu))/(4*R);
-        C(1,2) = XY_1*dq_imu*sin(q_imu) - XZ_1*dq_imu*cos(q_imu) + YZ_1*dpsi*(2*pow(cos(q_imu), 2) - 1) - YY_1*dpsi*cos(q_imu)*sin(q_imu) + ZZ_1*dpsi*cos(q_imu)*sin(q_imu);
-        C(2,1) = -dpsi*(YZ_1*cos(2*q_imu) - (YY_1*sin(2*q_imu))/2 + (ZZ_1*sin(2*q_imu))/2);
-        Q(2) = g*MZ_1*cos(q_imu) - g*MY_1*sin(q_imu);
-        Gamma_fric(0) = (2*fric_1*(dq_imu - dx/R))/R;
-        Gamma_fric(1) = -(L*L*dpsi*fric_1)/(2*R*R);
-        Gamma_fric(2) = -2*fric_1*(dq_imu - dx/R);
 
-    }
-
-    inline State f(const Eigen::Ref<const State> &x, const Eigen::Ref<const Control> &u)
-    {
+        A = dy_forces.A;
+        C = dy_forces.C;
+        Q = dy_forces.Q;
+        Gamma_fric = dy_forces.Gamma_fric;
 
         dq << dx, dpsi, dq_imu;
         ddth = u(0);
@@ -103,18 +138,23 @@ struct Krang3D: public Dynamics<T, 8, 2>
         // A*ddqVec + h = [ -tau_1/R; (L*tau_0)/(2*R); tau_1], where
         h = C*dq + Q - Gamma_fric;
         // R times first equation added to third equation results in
-        // [R*A(1,1)+A(3,1), R*A(1,2)+A(3,2); A(2,1), A(2,2)]*[ddxx; ddpsi] 
+        // [R*A(1,1)+A(3,1), R*A(1,2)+A(3,2); A(2,1), A(2,2)]*[ddxx; ddpsi]
         //   + [R*A(1,3)+A(3,3); A(2,3)]*ddth + [R*h(1)+h(3); h(2)] = [0; (L*tau_0)/(2*R)]
         // newA*[ddxx; ddpsi] + newh = [0; (L*tau_0)/(2*R)], where:
         newA(0,0) = R*A(0,0)+A(2,0);
-        newA(0,1) = R*A(0,1)+A(2,1); 
+        newA(0,1) = R*A(0,1)+A(2,1);
         newA(1,0) = A(1,0);
         newA(1,1) = A(1,1);
         newh(0) = (R*A(0,2)+A(2,2))*ddth + R*h(0)+h(2);
         newh(1) = A(1,2)*ddth + h(1);
         newBu(1) = (L*tau_0)/(2*R);
         xdot << dq, newA.colPivHouseholderQr().solve(-newh+newBu), ddth, dx*cos(psii), dx*sin(psii);
-        
+
+//        std::cout << "actual A: " << A << std::endl;
+//        std::cout << "actual C: " << C << std::endl;
+//        std::cout << "actual Q: " << Q << std::endl;
+//        std::cout << "actual G: " << Gamma_fric << std::endl;
+
         return xdot;
     }
 
@@ -142,7 +182,7 @@ struct Krang3D: public Dynamics<T, 8, 2>
     Eigen::Matrix<T, 2, 2> newA;
     Eigen::Matrix<T, 2, 1> newh;
     Eigen::Matrix<T, 2, 1> newBu;
-    
+
 };
 
 template <class T>
@@ -254,6 +294,63 @@ struct Krang3DTerminalCost: public TerminalCostFunction<Krang3D<T>>
 private:
     Hessian Q_;
 };
+
+//struct Krang3DPlant: public QObject, public Plant<double, 8, 2>
+//{
+//    using Base                  = Plant<double, 8, 2>;
+//    using Scalar                = typename Base::Scalar;
+//    using State                 = typename Base::State;
+//    using Control               = typename Base::Control;
+//    using StateNoiseVariance    = Eigen::Matrix<Scalar, StateSize, StateSize>;
+//    using ControlNoiseVariance  = Eigen::Matrix<Scalar, ControlSize, ControlSize>;
+//
+//    Krang3DPlant(Krang3D<Scalar> &cp, Scalar dt, Scalar state_var, Scalar control_var, QObject *parent = 0)
+//            : QObject(parent), cp_(cp), dt_(dt), sdist_(State::Zero(), state_var * StateNoiseVariance::Identity()),
+//              cdist_(Control::Zero(), control_var * ControlNoiseVariance::Identity()) {}
+//
+//    inline State f(const Eigen::Ref<const State> &x, const Eigen::Ref<const Control> &u)
+//    {
+//        static QVector<Scalar> sx(StateSize);
+//        static QVector<Scalar> su(ControlSize);
+//        static QVector<Scalar> sx_ref(StateSize);
+//
+//        Control u_noisy = u + cdist_.samples(1);
+//
+//        State xnew = x + cp_.f(x, u_noisy) * dt_ + sdist_.samples(1);
+//        Eigen::Map<State>(sx.data(), StateSize) = xnew;
+//        Eigen::Map<Control>(su.data(), ControlSize) = u_noisy;
+//        update(sx, su, sx, su);
+//        return xnew;
+//    }
+//    inline State f_with_ref(const Eigen::Ref<const State> &x, const Eigen::Ref<const Control> &u,
+//                            const Eigen::Ref<const State> &x_ref, const Eigen::Ref<const Control> &u_ref)
+//    {
+//        static QVector<Scalar> sx(StateSize);
+//        static QVector<Scalar> su(ControlSize);
+//        static QVector<Scalar> sx_ref(StateSize);
+//        static QVector<Scalar> su_ref(ControlSize);
+//
+//        Control u_noisy = u + cdist_.samples(1);
+//
+//        State xnew = x + cp_.f(x, u_noisy) * dt_ + sdist_.samples(1);
+//        Eigen::Map<State>(sx.data(), StateSize) = xnew;
+//        Eigen::Map<Control>(su.data(), ControlSize) = u_noisy;
+//        Eigen::Map<State>(sx_ref.data(), StateSize) = x_ref;
+//        Eigen::Map<Control>(su_ref.data(), ControlSize) = u_ref;
+//        update(sx, su, sx_ref, su_ref);
+//        return xnew;
+//    }
+//
+//    signals:
+//            void update(const QVector<Scalar> &state, const QVector<Scalar> &control, const QVector<Scalar> &state_ref, const QVector<Scalar> &control_ref) const;
+//
+//private:
+//    Q_OBJECT
+//            Krang3D<Scalar> &cp_;
+//    Scalar dt_;
+//    Eigen::EigenMultivariateNormal<Scalar, StateSize> sdist_;
+//    Eigen::EigenMultivariateNormal<Scalar, ControlSize> cdist_;
+//};
 
 template <class T>
 struct CSV_writer {

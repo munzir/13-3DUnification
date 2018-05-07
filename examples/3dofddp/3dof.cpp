@@ -237,6 +237,8 @@ class MyWindow : public dart::gui::SimWindow
     using TerminalCost = Krang3DTerminalCost<Scalar>;
     using StateTrajectory = typename Dynamics::StateTrajectory ;
     using ControlTrajectory= typename Dynamics::ControlTrajectory ;
+    using State = typename Dynamics::State;
+    using Control = typename Dynamics::Control;
 
   public:
     MyWindow(const WorldPtr& world)
@@ -302,6 +304,7 @@ class MyWindow : public dart::gui::SimWindow
       OptimizerResult<Dynamics> traj_results = trej_ddp.run(x0, u, krangDynamics, cp_cost, cp_terminal_cost);
       StateTrajectory xs = traj_results.state_trajectory;
       ctl_traj = traj_results.control_trajectory;
+      state_traj = traj_results.state_trajectory;
 
       std::cout << "Obtained initial state trajectory";
       for (int m = 0; m < xs.cols(); ++m) {
@@ -520,9 +523,35 @@ class MyWindow : public dart::gui::SimWindow
 //      tauR = 0.5*tau_w;
 //
 //       Apply Control Input
-      double u;
-      u = ctl_traj.col(steps)(0);
-      mForces << 0, 0, 0, 0, 0, 0, u, u;
+
+      double dt = m3DOF->getTimeStep();
+
+      State cur_x = state_traj.col(steps);
+      State next_x = state_traj.col(steps + 1);
+      Control cur_u = ctl_traj.col(steps);
+
+      param p;
+      p.R = 2.500000e-01; p.mw = 0.5; p.Iw = 5.100000e-03; p.L = 0.8; p.g=9.800000e+00;
+      p.m_1 = 115.0;
+      p.MX_1 = 0; p.MY_1 = 0.8; p.MZ_1 = 0;
+      p.XX_1 = 26; p.YY_1 = 0.0832724; p.ZZ_1 = 0.086493;
+      p.XY_1 = 2.45462e-05; p.YZ_1 = -0.00131733; p.XZ_1 = 0.00713022;
+      p.fric_1 = 15;
+      p.XXw = 0.005; p.YYw=0.0025; p.ZZw=0.0025;
+      Dynamics krangDynamics(p);
+
+      c_forces dyn_forces = krangDynamics.dynamic_forces(cur_x, cur_u);
+
+      double dd_x = (next_x(3) - cur_x(3)) / dt;
+      double dd_psi = (next_x(4) - cur_x(4)) / dt;
+      double ddth = cur_u(0);
+
+      double tau_0 =  cur_u(1);
+      double tau_1 = dyn_forces.A(2, 0) * dd_x + dyn_forces.A(2, 1) * dd_psi + dyn_forces.A(2, 2) * ddth + dyn_forces.C(2, 0) * cur_x(3) + dyn_forces.C(2, 1) * cur_x(4) + dyn_forces.C(2, 2) + dyn_forces.Q(2) + dyn_forces.Gamma_fric(2);
+      double tau_l = (tau_1 + tau_0) / 2;
+      double tau_r = (tau_1 - tau_0) / 2;
+
+      mForces << 0, 0, 0, 0, 0, 0, tau_l, tau_r;
       m3DOF->setForces(mForces);
       steps++;
 
@@ -534,7 +563,6 @@ class MyWindow : public dart::gui::SimWindow
 //      printf("\n");
 
       // Integrate Dynamics
-      double dt = m3DOF->getTimeStep();
 //      xFull = xFull + dt*x_dot;
 //
 //      thR_hat = xFull[4];
@@ -577,6 +605,7 @@ class MyWindow : public dart::gui::SimWindow
 
     filter *dqFilt, *cFilt;
     ControlTrajectory ctl_traj;
+    StateTrajectory state_traj;
 };
 
 

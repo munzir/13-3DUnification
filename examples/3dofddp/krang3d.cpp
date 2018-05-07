@@ -21,6 +21,7 @@ int main(int argc, char **argv)
     using StateTrajectory = typename Dynamics::StateTrajectory ;
     using ControlTrajectory= typename Dynamics::ControlTrajectory ;
 
+
     // Log output
     util::DefaultLogger logger;
 
@@ -42,7 +43,6 @@ int main(int argc, char **argv)
     p.XY_1 = 0; p.YZ_1 = 0; p.XZ_1 = 0;
     p.fric_1 = 15;
     p.XXw = 1.673438e-02; p.YYw=3.283125e-02; p.ZZw=1.673438e-02;
-//    std::cout << "2" << std::endl;
 
     // Dynamics
     Dynamics cp_dynamics(p);
@@ -56,7 +56,7 @@ int main(int argc, char **argv)
 
     // Initial state th, dth, x, dx, desired state, initial control sequence
     Dynamics::State x0 = Dynamics::State::Zero();
-    Dynamics::State xf; xf << 2, 0, 0, 0, 0, 0, 0.01, 5;
+    Dynamics::State xf; xf << 0, 0, 0, 0, 0, 0, 5, 0;
     Dynamics::ControlTrajectory u = Dynamics::ControlTrajectory::Zero(2, time_steps);
 //    std::cout << "5" << std::endl;
 

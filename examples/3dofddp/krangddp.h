@@ -9,14 +9,12 @@
 #include <ddp/dynamics.hpp>
 #include <ddp/plant.hpp>
 #include <ddp/eigenmvn.hpp>
-//#include <QtCore>
-//#include <QVector>
 #include <fstream>
 #include <iostream>
 
 
 struct param {
-    double R, mw, Iw, L, g;
+    double R, mw, L, g;
     double m_1;
     double MX_1, MY_1, MZ_1;
     double XX_1, YY_1, ZZ_1;
@@ -39,7 +37,7 @@ struct Krang3D: public Dynamics<T, 8, 2>
     using Control = typename Dynamics<T, 8, 2>::Control;
 
     Krang3D(param p)  {
-        R = p.R, mw = p.mw, Iw = p.Iw, L = p.L, g=p.g;
+        R = p.R, mw = p.mw, L = p.L, g=p.g;
         m_1 = p.m_1;
         MX_1 = p.MX_1, MY_1 = p.MY_1, MZ_1 = p.MZ_1;
         XX_1 = p.XX_1, YY_1 = p.YY_1, ZZ_1 = p.ZZ_1;
@@ -106,11 +104,6 @@ struct Krang3D: public Dynamics<T, 8, 2>
         dy_forces.Gamma_fric(1) = -(L*L*dpsi*fric_1)/(2*R*R);
         dy_forces.Gamma_fric(2) = -2*fric_1*(dq_imu - dx/R);
 
-//        std::cout << "A: " << dy_forces.A << std::endl;
-//        std::cout << "C: " << dy_forces.C << std::endl;
-//        std::cout << "Q: " << dy_forces.Q << std::endl;
-//        std::cout << "G: " << dy_forces.Gamma_fric << std::endl;
-
         return dy_forces;
     }
 
@@ -150,15 +143,10 @@ struct Krang3D: public Dynamics<T, 8, 2>
         newBu(1) = (L*tau_0)/(2*R);
         xdot << dq, newA.colPivHouseholderQr().solve(-newh+newBu), ddth, dx*cos(psii), dx*sin(psii);
 
-//        std::cout << "actual A: " << A << std::endl;
-//        std::cout << "actual C: " << C << std::endl;
-//        std::cout << "actual Q: " << Q << std::endl;
-//        std::cout << "actual G: " << Gamma_fric << std::endl;
-
         return xdot;
     }
 
-    T R, mw, Iw, L, g;
+    T R, mw, L, g;
     T m_1;
     T MX_1, MY_1, MZ_1;
     T XX_1, YY_1, ZZ_1;
@@ -294,63 +282,6 @@ struct Krang3DTerminalCost: public TerminalCostFunction<Krang3D<T>>
 private:
     Hessian Q_;
 };
-
-//struct Krang3DPlant: public QObject, public Plant<double, 8, 2>
-//{
-//    using Base                  = Plant<double, 8, 2>;
-//    using Scalar                = typename Base::Scalar;
-//    using State                 = typename Base::State;
-//    using Control               = typename Base::Control;
-//    using StateNoiseVariance    = Eigen::Matrix<Scalar, StateSize, StateSize>;
-//    using ControlNoiseVariance  = Eigen::Matrix<Scalar, ControlSize, ControlSize>;
-//
-//    Krang3DPlant(Krang3D<Scalar> &cp, Scalar dt, Scalar state_var, Scalar control_var, QObject *parent = 0)
-//            : QObject(parent), cp_(cp), dt_(dt), sdist_(State::Zero(), state_var * StateNoiseVariance::Identity()),
-//              cdist_(Control::Zero(), control_var * ControlNoiseVariance::Identity()) {}
-//
-//    inline State f(const Eigen::Ref<const State> &x, const Eigen::Ref<const Control> &u)
-//    {
-//        static QVector<Scalar> sx(StateSize);
-//        static QVector<Scalar> su(ControlSize);
-//        static QVector<Scalar> sx_ref(StateSize);
-//
-//        Control u_noisy = u + cdist_.samples(1);
-//
-//        State xnew = x + cp_.f(x, u_noisy) * dt_ + sdist_.samples(1);
-//        Eigen::Map<State>(sx.data(), StateSize) = xnew;
-//        Eigen::Map<Control>(su.data(), ControlSize) = u_noisy;
-//        update(sx, su, sx, su);
-//        return xnew;
-//    }
-//    inline State f_with_ref(const Eigen::Ref<const State> &x, const Eigen::Ref<const Control> &u,
-//                            const Eigen::Ref<const State> &x_ref, const Eigen::Ref<const Control> &u_ref)
-//    {
-//        static QVector<Scalar> sx(StateSize);
-//        static QVector<Scalar> su(ControlSize);
-//        static QVector<Scalar> sx_ref(StateSize);
-//        static QVector<Scalar> su_ref(ControlSize);
-//
-//        Control u_noisy = u + cdist_.samples(1);
-//
-//        State xnew = x + cp_.f(x, u_noisy) * dt_ + sdist_.samples(1);
-//        Eigen::Map<State>(sx.data(), StateSize) = xnew;
-//        Eigen::Map<Control>(su.data(), ControlSize) = u_noisy;
-//        Eigen::Map<State>(sx_ref.data(), StateSize) = x_ref;
-//        Eigen::Map<Control>(su_ref.data(), ControlSize) = u_ref;
-//        update(sx, su, sx_ref, su_ref);
-//        return xnew;
-//    }
-//
-//    signals:
-//            void update(const QVector<Scalar> &state, const QVector<Scalar> &control, const QVector<Scalar> &state_ref, const QVector<Scalar> &control_ref) const;
-//
-//private:
-//    Q_OBJECT
-//            Krang3D<Scalar> &cp_;
-//    Scalar dt_;
-//    Eigen::EigenMultivariateNormal<Scalar, StateSize> sdist_;
-//    Eigen::EigenMultivariateNormal<Scalar, ControlSize> cdist_;
-//};
 
 template <class T>
 struct CSV_writer {

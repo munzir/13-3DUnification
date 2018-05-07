@@ -4,205 +4,17 @@
 #include <iostream>
 #include <fstream>
 #include <boost/circular_buffer.hpp>
-#include <chrono>
-#include <thread>
 #include <ddp/costs.hpp>
 #include <ddp/ddp.hpp>
 #include <ddp/mpc.hpp>
 #include <ddp/util.hpp>
-#include "krang3d.h"
+#include "krangddp.h"
 
 using namespace std;
 using namespace dart::common;
 using namespace dart::dynamics;
 using namespace dart::simulation;
 using namespace dart::math;
-
-
-const double default_speed_increment = 0.5;
-
-const int default_ik_iterations = 4500;
-
-const double default_force =  50.0; // N
-const int default_countdown = 100;  // Number of timesteps for applying force
-
-
-class Controller
-{
-public:
-  /// Constructor
-  Controller(const SkeletonPtr& skel)
-    : mNDOF(skel),
-      mSpeed(0.0)
-  {
-    int nDofs = mNDOF->getNumDofs();
-    
-    mForces = Eigen::VectorXd::Zero(nDofs);
-    
-    mKp = Eigen::MatrixXd::Identity(nDofs, nDofs);
-    mKd = Eigen::MatrixXd::Identity(nDofs, nDofs);
-  
-    for(std::size_t i = 0; i < 6; ++i)
-    {
-      mKp(i, i) = 0.0;
-      mKd(i, i) = 0.0;
-    }
-
-    for(std::size_t i = 6; i < mNDOF->getNumDofs(); ++i)
-    {
-      mKp(i, i) = 1000;
-      mKd(i, i) = 50;
-    }
-    
-    setTargetPositions(mNDOF->getPositions());
-  }
-  
-  /// Reset the desired dof position to the current position
-  void setTargetPositions(const Eigen::VectorXd& pose)
-  {
-    mTargetPositions = pose;
-  }
-
-  /// Clear commanding forces
-  void clearForces()
-  {
-    mForces.setZero();
-  }
-  
-  /// Add commanding forces from PD controllers (Lesson 2 Answer)
-  void addPDForces()
-  {
-    Eigen::VectorXd q = mNDOF->getPositions();
-    Eigen::VectorXd dq = mNDOF->getVelocities();
-    
-    Eigen::VectorXd p = -mKp * (q - mTargetPositions);
-    Eigen::VectorXd d = -mKd * dq;
-    
-    mForces += p + d;
-    mNDOF->setForces(mForces);
-  }
-
-  /// Add commanind forces from Stable-PD controllers (Lesson 3 Answer)
-  void addSPDForces()
-  {
-    Eigen::VectorXd q = mNDOF->getPositions();
-    Eigen::VectorXd dq = mNDOF->getVelocities();
-
-    Eigen::MatrixXd invM = (mNDOF->getMassMatrix()
-                            + mKd * mNDOF->getTimeStep()).inverse();
-    Eigen::VectorXd p =
-        -mKp * (q + dq * mNDOF->getTimeStep() - mTargetPositions);
-    Eigen::VectorXd d = -mKd * dq;
-    Eigen::VectorXd qddot =
-        invM * (-mNDOF->getCoriolisAndGravityForces()
-            + p + d + mNDOF->getConstraintForces());
-    
-    mForces += p + d - mKd * qddot * mNDOF->getTimeStep();
-    mNDOF->setForces(mForces);
-  }
-  
-  /// add commanding forces from ankle strategy (Lesson 4 Answer)
-  void addAnkleStrategyForces()
-  {
-    Eigen::Vector3d COM = mNDOF->getCOM();
-    // Approximated center of pressure in sagittal axis
-    Eigen::Vector3d offset(0.05, 0, 0);
-    Eigen::Vector3d COP = mNDOF->getBodyNode("h_heel_left")->
-        getTransform() * offset;
-    double diff = COM[0] - COP[0];
-
-    Eigen::Vector3d dCOM = mNDOF->getCOMLinearVelocity();
-    Eigen::Vector3d dCOP =  mNDOF->getBodyNode("h_heel_left")->
-        getLinearVelocity(offset);
-    double dDiff = dCOM[0] - dCOP[0];
-
-    int lHeelIndex = mNDOF->getDof("j_heel_left_1")->getIndexInSkeleton();
-    int rHeelIndex = mNDOF->getDof("j_heel_right_1")->getIndexInSkeleton();
-    int lToeIndex = mNDOF->getDof("j_toe_left")->getIndexInSkeleton();
-    int rToeIndex = mNDOF->getDof("j_toe_right")->getIndexInSkeleton();
-    if(diff < 0.1 && diff >= 0.0) {
-      // Feedback rule for recovering forward push
-      double k1 = 200.0;
-      double k2 = 100.0;
-      double kd = 10;
-      mForces[lHeelIndex] += -k1 * diff - kd * dDiff;
-      mForces[lToeIndex] += -k2 * diff - kd * dDiff;
-      mForces[rHeelIndex] += -k1 * diff - kd * dDiff;
-      mForces[rToeIndex] += -k2 * diff - kd * dDiff;
-    }else if(diff > -0.2 && diff < -0.05) {
-      // Feedback rule for recovering backward push
-      double k1 = 2000.0;
-      double k2 = 100.0;
-      double kd = 100;
-      mForces[lHeelIndex] += -k1 * diff - kd * dDiff;
-      mForces[lToeIndex] += -k2 * diff - kd * dDiff;
-      mForces[rHeelIndex] += -k1 * diff - kd * dDiff;
-      mForces[rToeIndex] += -k2 * diff - kd * dDiff;
-    }  
-    mNDOF->setForces(mForces);
-  }
-
-  void initialize_observer_gains()
-  {
-
-  }
-
-
-
-  // Send velocity commands on wheel actuators (Lesson 6 Answer)
-  void setWheelCommands()
-  {
-    // Extract Position and Angle
-    // Eigen::VectorXd q = m3DOF->getPositions();
-
-    // cout << q << endl;
-
-    // Set Wheel Speed from LQR Controller
-
-    int wheelFirstIndex = mNDOF->getDof("JLWheel")->getIndexInSkeleton();
-    for (std::size_t i = wheelFirstIndex; i < mNDOF->getNumDofs(); ++i)
-    {
-      mKp(i, i) = 0.0;
-      mKd(i, i) = 0.0;
-    }
-    
-    int index1 = mNDOF->getDof("JLWheel")->getIndexInSkeleton();
-    int index2 = mNDOF->getDof("JRWheel")->getIndexInSkeleton();
-
-    mNDOF->setCommand(index1, mSpeed);
-    mNDOF->setCommand(index2, mSpeed);
-
-  }
-  
-  void changeWheelSpeed(double increment)
-  {
-    mSpeed += increment;
-    std::cout << "wheel speed = " << mSpeed << std::endl;
-  }
-  
-protected:
-  /// The biped Skeleton that we will be controlling
-  SkeletonPtr mNDOF;
-  
-  /// Joint forces for the biped (output of the Controller)
-  Eigen::VectorXd mForces;
-  
-  /// Control gains for the proportional error terms in the PD controller
-  Eigen::MatrixXd mKp;
-
-  /// Control gains for the derivative error terms in the PD controller
-  Eigen::MatrixXd mKd;
-
-  /// Target positions for the PD controllers
-  Eigen::VectorXd mTargetPositions;
-    
-  /// For velocity actuator: Current speed of the skateboard
-  double mSpeed;
-
-  /// Pendulum Control Parameters
-};
-
-
 
 class filter {
   public:
@@ -230,8 +42,8 @@ class filter {
 
 class MyWindow : public dart::gui::SimWindow
 {
-    using Dynamics = Krang3D<double>;
-    using Scalar = double;
+    using Scalar = double;  
+    using Dynamics = Krang3D<Scalar>;
     using DDP_Opt = optimizer::DDP<Dynamics>;
     using Cost = Krang3DCost<Scalar>;
     using TerminalCost = Krang3DTerminalCost<Scalar>;
@@ -240,48 +52,68 @@ class MyWindow : public dart::gui::SimWindow
     using State = typename Dynamics::State;
     using Control = typename Dynamics::Control;
 
-  public:
+  public: 
     MyWindow(const WorldPtr& world)
     {
-
       setWorld(world);
       m3DOF = world->getSkeleton("m3DOF");
       qInit = m3DOF->getPositions();
-      
       psi = 0; // Heading Angle
-
+      steps = 0;
+      outFile.open("constraints.csv");
+      dqFilt = new filter(8, 50);
+      cFilt = new filter(5, 50);
       R = 0.25;
       L = 0.68;//*6;
 
+      computeDDPTrajectory();
 
-      steps = 0;
+    }
 
-      outFile.open("constraints.csv");
-      dqFilt = new filter(8, 100);
-      cFilt = new filter(5, 100);
+    void computeDDPTrajectory() {
 
-      mController = dart::common::make_unique<Controller>(m3DOF);
-
+      param p; 
+      double ixx, iyy, izz, ixy, ixz, iyz; 
+      Eigen::Vector3d com;
+      Eigen::Matrix3d iMat;      
+      Eigen::Matrix3d tMat;
+      dart::dynamics::Frame* baseFrame = m3DOF->getBodyNode("Base");
+      p.R = 2.500000e-01; p.L = 6.000000e-01; p.g=9.800000e+00;
+      p.mw = m3DOF->getBodyNode("LWheel")->getMass(); 
+      m3DOF->getBodyNode("LWheel")->getMomentOfInertia(ixx, iyy, izz, ixy, ixz, iyz);
+      p.YYw = ixx; p.ZZw = izz; p.XXw = iyy; // Wheel frame of reference in ddp dynamic model is different from the one in DART
+      p.m_1 = m3DOF->getBodyNode("Base")->getMass(); 
+      com = m3DOF->getBodyNode("Base")->getCOM(baseFrame);
+      p.MX_1 = p.m_1*com(0); p.MY_1 = p.m_1*com(1); p.MZ_1 = p.m_1*com(2);
+      m3DOF->getBodyNode("Base")->getMomentOfInertia(ixx, iyy, izz, ixy, ixz, iyz);
+      Eigen::Vector3d s = -com; // Position vector from local COM to body COM expressed in base frame
+      iMat << ixx, ixy, ixz, // Inertia tensor of the body around its CoM expressed in body frame
+              ixy, iyy, iyz,
+              ixz, iyz, izz;
+      tMat << (s(1)*s(1)+s(2)*s(2)), (-s(0)*s(1)),          (-s(0)*s(2)),
+              (-s(0)*s(1)),          (s(0)*s(0)+s(2)*s(2)), (-s(1)*s(2)),
+              (-s(0)*s(2)),          (-s(1)*s(2)),          (s(0)*s(0)+s(1)*s(1));
+      iMat = iMat + p.m_1*tMat; // Parallel Axis Theorem
+      p.XX_1 = iMat(0,0); p.YY_1 = iMat(1,1); p.ZZ_1 = iMat(2,2);
+      p.XY_1 = iMat(0,1); p.YZ_1 = iMat(1,2); p.XZ_1 = iMat(0,2);
+      p.fric_1 = m3DOF->getJoint(0)->getDampingCoefficient(0); // Assuming both joints have same friction coeff (Please make sure that is true)
+      
+      CSV_writer<Scalar> writer;
       util::DefaultLogger logger;
-      Scalar tf = 20;
-      Scalar ddp_dt = 0.01;
-      auto time_steps = util::time_steps(tf, ddp_dt);
-      int max_iterations = 15;
       bool verbose = true;
+      Scalar tf = 20;
+      Scalar dt = 0.01;
+      auto time_steps = util::time_steps(tf, dt);
+      int max_iterations = 15;
 
-      param p;
-      p.R = 2.500000e-01; p.mw = 0.5; p.Iw = 5.100000e-03; p.L = 0.8; p.g=9.800000e+00;
-      p.m_1 = 115.0;
-      p.MX_1 = 0; p.MY_1 = 0.8; p.MZ_1 = 0;
-      p.XX_1 = 26; p.YY_1 = 0.0832724; p.ZZ_1 = 0.086493;
-      p.XY_1 = 2.45462e-05; p.YZ_1 = -0.00131733; p.XZ_1 = 0.00713022;
-      p.fric_1 = 15;
-      p.XXw = 0.005; p.YYw=0.0025; p.ZZw=0.0025;
+       Dynamics ddp_dyn(p);
 
-      Dynamics krangDynamics(p);
+      // Initial state th, dth, x, dx, desired state, initial control sequence
       Dynamics::State x0 = Dynamics::State::Zero();
-      Dynamics::State xf; xf << 0, 0, 0, 0, 0, 0, 5, 0;
+      Dynamics::State xf; xf << 2, 0, 0, 0, 0, 0, 0.01, 5;
       Dynamics::ControlTrajectory u = Dynamics::ControlTrajectory::Zero(2, time_steps);
+
+      // Costs
       Cost::StateHessian Q;
       Q.setZero();
       Q.diagonal() << 0,0.1,0.1,0.1,0.1,0.1,0.1,0.1;
@@ -298,284 +130,139 @@ class MyWindow : public dart::gui::SimWindow
       TerminalCost cp_terminal_cost(xf, Qf);
 
       // initialize DDP for trajectory planning
-      DDP_Opt trej_ddp (ddp_dt, time_steps, max_iterations, &logger, verbose);
+      DDP_Opt trej_ddp (dt, time_steps, max_iterations, &logger, verbose);
 
       // Get initial trajectory from DDP
-      OptimizerResult<Dynamics> traj_results = trej_ddp.run(x0, u, krangDynamics, cp_cost, cp_terminal_cost);
-      StateTrajectory xs = traj_results.state_trajectory;
-      ctl_traj = traj_results.control_trajectory;
-      state_traj = traj_results.state_trajectory;
+      OptimizerResult<Dynamics> DDP_traj = trej_ddp.run(x0, u, ddp_dyn, cp_cost, cp_terminal_cost);
 
-      std::cout << "Obtained initial state trajectory";
-      for (int m = 0; m < xs.cols(); ++m) {
-        std::cout << "\n";
-        for (int n = 0; n < xs.rows(); ++n) {
-          std::cout << xs(n, m);
-        }
-      }
+      StateTrajectory ddp_state_traj = DDP_traj.state_trajectory;
+      ControlTrajectory ddp_ctl_traj = DDP_traj.control_trajectory;
 
-      std::cout << "Obtained initial control trajectory";
-      for (int m = 0; m < ctl_traj.cols(); ++m) {
-        std::cout << "\n";
-        for (int n = 0; n < ctl_traj.rows(); ++n) {
-          std::cout << ctl_traj(n, m);
-        }
-      }
+      writer.save_trajectory(ddp_state_traj, ddp_ctl_traj, "initial_traj.csv");
     }
 
     void timeStepping() override
     {
-      // Read Positions, Speeds, Transform speeds to world coordinates and filter the speeds
-//      Eigen::Matrix<double, 4, 4> Tf = m3DOF->getBodyNode(0)->getTransform().matrix();
-//      psi =  atan2(Tf(0,0),-Tf(1,0));
-//      qBody1 = atan2(Tf(0,1)*cos(psi) + Tf(1,1)*sin(psi), Tf(2,1));
-      Eigen::VectorXd q = m3DOF->getPositions();
-//      Eigen::VectorXd xPlane(3);
-//      xPlane << q(0),q(1),0;
-//
-//      // Distance from Origin
-//      dist = xPlane.norm();
-//
-//      Eigen::VectorXd dq_orig = m3DOF->getVelocities();
-//      Eigen::Matrix<double, 8, 1> dq;
-//      dq << (Tf.block<3,3>(0,0) * dq_orig.head(3)) , (Tf.block<3,3>(0,0) * dq_orig.segment(3,3)), dq_orig(6), dq_orig(7);
-//      dqFilt->AddSample(dq);
-//
-//      // Wheel Rotation (World Frame)
-//      thL = q(6) - std::abs(qBody1);
-//      thR = q(7) - std::abs(qBody1);
-//
-//      // Corresponding Velocities (Filtered)
-//      dpsi = dq(2);
-//      dpsiFilt = dqFilt->average(2);
-//      dqBody1 = -dq_orig(0);
-//      dqBody1Filt = (-dqFilt->average(0)*sin(psi) + dqFilt->average(1)*cos(psi));
-//      dthL = dq(6) + dqBody1;
-//      dthLFilt = dqFilt->average(6) + dqBody1Filt;
-//      dthR = dq(7) + dqBody1;
-//      dthRFilt = dqFilt->average(7) + dqBody1Filt;
-//
-//      // thR =
-//      // Constraints
-//      // 1. dZ0 = 0                                               => dq_orig(4)*cos(qBody1) + dq_orig(5)*sin(qBody1) = 0
-//      // 2. da3 + R/L*(dthL - dthR) = 0                           => dq_orig(1)*cos(qBody1) + dq_orig(2)*sin(qBody1) + R/L*(dq_orig(6) - dq_orig(7)) = 0
-//      // 3. da1*cos(psii) + da2*sin(psii) = 0                     => dq_orig(1)*sin(qBody1) - dq_orig(2)*cos(qBody1) = 0
-//      // 4. dX0*sin(psii) - dY0*cos(psii) = 0                     => dq_orig(3) = 0
-//      // 5. dX0*cos(psii) + dY0*sin(psii) - R/2*(dthL + dthR) = 0 => dq_orig(4)*sin(qBody1) - dq_orig(5)*cos(qBody1) - R/2*(dq_orig(6) + dq_orig(7) - 2*dq_orig(0)) = 0
-//      Eigen::Matrix<double, 5, 1> c;
-//      c << (dq_orig(4)*cos(qBody1) + dq_orig(5)*sin(qBody1)), (dq_orig(1)*cos(qBody1) + dq_orig(2)*sin(qBody1) + R/L*(dq_orig(6) - dq_orig(7))), (dq_orig(1)*sin(qBody1) - dq_orig(2)*cos(qBody1)), dq_orig(3), (dq_orig(4)*sin(qBody1) - dq_orig(5)*cos(qBody1) - R/2*(dq_orig(6) + dq_orig(7) - 2*dq_orig(0)));
-//      cFilt->AddSample(c);
-//      //if(Tf(2,1) > 0)
-//      {
-//      for(int i=0; i<8; i++) outFile << dq(i) << ", ";
-//      for(int i=0; i<8; i++) outFile << dqFilt->average(i) << ", ";
-//      outFile << psi << ", " << dpsi << ", " << qBody1 << ", " << dqBody1 << ", " <<  dthL << ", " << dthR << ", ";
-//      outFile << psiFilt << ", " << dpsiFilt << ", " << qBody1Filt << ", " << dqBody1Filt << ", " <<  dthLFilt << ", " << dthRFilt << ", ";
-//      for(int i=0; i<5; i++) outFile << c(i) << ", ";
-//      for(int i=0; i<5; i++) outFile << cFilt->average(i) << ", ";
-//      for(int i=0; i<8; i++) outFile << q(i) << ", ";
-//      outFile << std::endl;
-//      }
-//
-//
-//      // Wheeled Inverted Pendulum Parameters
-//      double I_ra = 0;
-//      double gamma = 1.0;
-//      double g = 9.81;
-//      double c_w = 0.1;
-//
-//      double r_w, m_w, I_wa; // Wheel Parameters
-//      double M_g, l_g; // COM Parameters
-//
-//      double Iw_xx, Iw_yy, Iw_zz, Iw_xy, Iw_xz, Iw_yz; // Wheel Moment of Inertia
-//      double I_xx, I_yy, I_zz, I_xy, I_xz, I_yz; // Base Moment of Inertia
-//
-//      double delta, c1, c2; // Intermediate Parameters
-//
-//      double u_theta, u_psi, tau_w; // Control Signals
-//
-//      Eigen::VectorXd x_dot(10);
-//      Eigen::VectorXd x_dot_sys(4); // Observer Dynamics
-//      Eigen::VectorXd x_dot_w(3);
-//      Eigen::VectorXd x_dot_p(3);
-//
-//      std::vector< BodyNode * > nodes = m3DOF->getBodyNodes();
-//      for(auto const& n: nodes) {
-//        std::string node_name = n->getName();
-//
-//        // Extract Wheel Parameters
-//        if(node_name.find("Wheel") != string::npos){
-//          m_w = n->getMass();
-//          n->getMomentOfInertia(Iw_xx,Iw_yy,Iw_zz,Iw_xy,Iw_xz,Iw_yz);
-//          I_wa = Iw_xx;
-//          r_w = 0.25;
-//        }
-//
-//        // Extract Body Parameters
-//        if(node_name.find("Base") != string::npos){
-//          M_g = n->getMass();
-//          n->getMomentOfInertia(I_xx,I_yy,I_zz,I_xy,I_xz,I_yz);
-//          Eigen::Vector3d com = n->getLocalCOM();
-//          l_g = com[1];
-//        }
-//      }
-//
-//      delta = (M_g*l_g+I_yy+pow(gamma,2)*I_ra)*(M_g+m_w)*pow(r_w,2)+I_wa+I_ra*pow(gamma,2)-pow(M_g*r_w*l_g-I_ra*pow(gamma,2),2);
-//      c1 = (M_g+m_w)*pow(r_w,2)+I_wa+I_ra*pow(gamma,2)+M_g*r_w*l_g+I_ra*pow(gamma,2);
-//      c2 = M_g*r_w*l_g+M_g*pow(l_g,2)+I_yy;
-//
-//      // Hardcode Dynamics + Feedback for Now
-//      Eigen::MatrixXd A(4,4);
-//      Eigen::MatrixXd B(4,1);
-//
-//      Eigen::MatrixXd A_(3,3);
-//      Eigen::MatrixXd B_1(3,1);
-//      Eigen::MatrixXd B_2(3,1);
-//      Eigen::MatrixXd L_1(3,1);
-//      Eigen::MatrixXd L_2(3,1);
-//      // Eigen::MatrixXi C_(4,4);
-//
-//      A << 0, 0, 1, 0,
-//           0, 0, 0, 1,
-//           17.7828531704201,  0, -0.00858417221300891,  0.00858417221300891,
-//           47.8688365622367,  0, 0.0288387521185202,  -0.0288387521185202;
-//
-//      B << 0,
-//           0,
-//           -0.0858417221300890,
-//           0.288387521185202;
-//
-//      A_ << 0, 1, 0,
-//            0, 0, 1,
-//            0, 0, 0;
-//
-//      B_1 << 0,
-//             0.288387521185202,
-//             0;
-//
-//      B_2 << 0,
-//             -0.0858417221300890,
-//             0;
-//
-//      L_1 << 1159.99999999673,173438.396407957,1343839.4084839;
-//      L_2 = L_1;
-//
-//
-//      Eigen::VectorXd xL(4);
-//      xL << qBody1, thR, dqBody1Filt, dthRFilt;
-//
-//      Eigen::VectorXd xR(4);
-//      xR << qBody1, thR, dqBody1Filt, dthRFilt;
-//
-//      if(steps==0){
-//        thR_hat = thR;
-//        dthR_hat = dthRFilt;
-//        f_thR = 0.0;
-//
-//        qBody1_hat = qBody1;
-//        dqBody1_hat = dqBody1Filt;
-//        f_qBody1 = 0.0;
-//      }
-//
-//      // double thR_hat, dthR_hat, f_thR, qBody1_hat, dqBody1_hat, f_qBody1;
-//      Eigen::VectorXd xFull(10);
-//      xFull << qBody1, thR, dqBody1Filt, dthRFilt, thR_hat, dthR_hat, f_thR, qBody1_hat, dqBody1_hat, f_qBody1;
-//
-//      Eigen::VectorXd xDesired(4);
-//      xDesired << 0,0,0,0;
-//
-//      Eigen::VectorXd F(4);
-//
-//      // Break Dance Moves
-//      F << -510.449550243191,  -0.244948974282393,  -110.528023245082, -1.14116859943037;
-//
-//
-//      tauL = -0.5*F.transpose()*(xL-xDesired);
-//      tauR = -0.5*F.transpose()*(xR-xDesired);
-//
-//      // Observer Control
-//      Eigen::VectorXd ut1(2); ut1 << F[1], F[3];
-//      Eigen::VectorXd ut2(2); ut2 << xFull[4]-xDesired[1], xFull[5]-xDesired[3];
-//
-//      Eigen::VectorXd up1(2); up1 << F[0], F[2];
-//      Eigen::VectorXd up2(2); up2 << xFull[7]-xDesired[0], xFull[8]-xDesired[2];
-//
-//      u_theta = -ut1.transpose()*ut2;
-//      u_psi = -up1.transpose()*up2;
-//      tau_w = u_psi + u_theta - xFull[9] - xFull[6];
-//
-//      // Real Dynamics
-//      // SIMULATOR HERE
-//
-//      // Observer Dynamics
-//      // x_dot_sys = x
-//
-//
-//      Eigen::VectorXd wh(3); wh << xFull[4], xFull[5], xFull[6];
-//
-//      Eigen::VectorXd ph(3); ph << xFull[7], xFull[8], xFull[9];
-//      // x_dot_sys = Ignore, Just Use Simulation Output
-//      x_dot_w = A_*wh + L_1*(xFull[1]-xFull[4]) + B_1*u_theta;
-//      x_dot_p = A_*ph + L_2*(xFull[0]-xFull[7]) + B_2*u_psi;
-//      x_dot << x_dot_sys, x_dot_w, x_dot_p;
-//
-//      tauL = 0.5*tau_w;
-//      tauR = 0.5*tau_w;
-//
-//       Apply Control Input
-
-      double dt = m3DOF->getTimeStep();
-
-      // TODO: CHANGE HARD CODED DT DIFFERENCE
-      double ddp_step = steps / 10;
-      State cur_x = state_traj.col(ddp_step);
-      State next_x = state_traj.col(ddp_step + 1);
-      Control cur_u = ctl_traj.col(ddp_step);
-
-      param p;
-      p.R = 2.500000e-01; p.mw = 0.5; p.Iw = 5.100000e-03; p.L = 0.8; p.g=9.800000e+00;
-      p.m_1 = 115.0;
-      p.MX_1 = 0; p.MY_1 = 0.8; p.MZ_1 = 0;
-      p.XX_1 = 26; p.YY_1 = 0.0832724; p.ZZ_1 = 0.086493;
-      p.XY_1 = 2.45462e-05; p.YZ_1 = -0.00131733; p.XZ_1 = 0.00713022;
-      p.fric_1 = 15;
-      p.XXw = 0.005; p.YYw=0.0025; p.ZZw=0.0025;
-      Dynamics krangDynamics(p);
-
-      c_forces dyn_forces = krangDynamics.dynamic_forces(cur_x, cur_u);
-
-      double dd_x = (next_x(3) - cur_x(3)) / dt;
-      double dd_psi = (next_x(4) - cur_x(4)) / dt;
-      double ddth = cur_u(0);
-
-      double tau_0 =  cur_u(1);
-      double tau_1 = dyn_forces.A(2, 0) * dd_x + dyn_forces.A(2, 1) * dd_psi + dyn_forces.A(2, 2) * ddth + dyn_forces.C(2, 0) * cur_x(3) + dyn_forces.C(2, 1) * cur_x(4) + dyn_forces.C(2, 2) + dyn_forces.Q(2) + dyn_forces.Gamma_fric(2);
-      double tau_l = (tau_1 + tau_0) / 2;
-      double tau_r = (tau_1 - tau_0) / 2;
-
-      mForces << 0, 0, 0, 0, 0, 0, tau_l, tau_r;
-      m3DOF->setForces(mForces);
       steps++;
 
+      // Read Positions, Speeds, Transform speeds to world coordinates and filter the speeds
+      Eigen::Matrix<double, 4, 4> Tf = m3DOF->getBodyNode(0)->getTransform().matrix();
+      psi =  atan2(Tf(0,0), -Tf(1,0));
+      qBody1 = atan2(Tf(0,1)*cos(psi) + Tf(1,1)*sin(psi), Tf(2,1));
+      Eigen::VectorXd q = m3DOF->getPositions();
+      Eigen::VectorXd dq_orig = m3DOF->getVelocities();
+      Eigen::Matrix<double, 8, 1> dq;
+      dq << (Tf.block<3,3>(0,0) * dq_orig.head(3)) , (Tf.block<3,3>(0,0) * dq_orig.segment(3,3)), dq_orig(6), dq_orig(7);
+      dqFilt->AddSample(dq);
+
+      // Calculate the quantities we are interested in
+      dpsi = dq(2);
+      dpsiFilt = dqFilt->average(2);
+      dqBody1 = -dq_orig(0);
+      dqBody1Filt = (-dqFilt->average(0)*sin(psi) + dqFilt->average(1)*cos(psi));
+      double thL = q(6) + qBody1;
+      dthL = dq(6) + dqBody1;
+      dthLFilt = dqFilt->average(6) + dqBody1Filt;
+      double thR = q(7) + qBody1;
+      dthR = dq(7) + dqBody1;
+      dthRFilt = dqFilt->average(7) + dqBody1Filt;
+
+      // MPC DDP RECEDING HORIZON CALCULATION
+      // double dt = 0.01; 
+      // int max_iterations = 15; 
+      // bool verbose = true; 
+      // util::DefaultLogger logger;
+
+      // State cur_state = getState(); 
+      // mpc_horizon = 10; 
+      // Dynamics::State target_state = ddp_state_traj.col(steps + mpc_horizon);
+      // Dynamics::ControlTrajectory hor_control = Dynamics::ControlTrajectory::Zero(2, mpc_horizon);
+      // Dynamics::StateTrajectory hor_traj_states = ddp_state_traj.block(0, steps, 8, mpc_horizon);
+
+      // DDP_Opt ddp_horizon (dt, mpc_horizon, max_iterations, &logger, verbose);
+
+      // Cost::StateHessian Q_mpc, Qf_mpc;
+      // Q_mpc.setZero();
+      // Q_mpc.diagonal() << 0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1;
+      // Qf_mpc.setZero();
+      // Qf_mpc.diagonal() << 0, 1e4, 1e4, 1e4, 1e4, 1e4, 1e4, 1e4;
+      // Cost running_cost_horizon(target_state, Q_mpc, R);
+      // TerminalCost terminal_cost_horizon(target_state, Qf_mpc);
+
+      // OptimizerResult<Dynamics> hor_results;
+      // hor_results.control_trajectory = hor_control;
+
+      // results_horizon = ddp_horizon.run_horizon(cur_state, hor_control, hor_traj_states, ddp_dyn, running_cost_horizon, terminal_cost_horizon);
+
+      // Dynamics::Control cur_control = results_horizon.control_trajectory.col(0);
 
 
-//      printf("%6d ",steps);
-//      printf("%12.4f ",tauR);
-//      for(int i = 0; i < 10; i++){printf("%12.7f ",xFull[i]);}
-//      printf("\n");
+      
+      // Constraints
+      // 1. dZ0 = 0                                               => dq_orig(4)*cos(qBody1) + dq_orig(5)*sin(qBody1) = 0
+      // 2. da3 + R/L*(dthL - dthR) = 0                           => dq_orig(1)*cos(qBody1) + dq_orig(2)*sin(qBody1) + R/L*(dq_orig(6) - dq_orig(7)) = 0 
+      // 3. da1*cos(psii) + da2*sin(psii) = 0                     => dq_orig(1)*sin(qBody1) - dq_orig(2)*cos(qBody1) = 0
+      // 4. dX0*sin(psii) - dY0*cos(psii) = 0                     => dq_orig(3) = 0
+      // 5. dX0*cos(psii) + dY0*sin(psii) - R/2*(dthL + dthR) = 0 => dq_orig(4)*sin(qBody1) - dq_orig(5)*cos(qBody1) - R/2*(dq_orig(6) + dq_orig(7) - 2*dq_orig(0)) = 0
+      // Eigen::Matrix<double, 5, 1> c;
+      // c << (dq_orig(4)*cos(qBody1) + dq_orig(5)*sin(qBody1)), (dq_orig(1)*cos(qBody1) + dq_orig(2)*sin(qBody1) + R/L*(dq_orig(6) - dq_orig(7))), (dq_orig(1)*sin(qBody1) - dq_orig(2)*cos(qBody1)), dq_orig(3), (dq_orig(4)*sin(qBody1) - dq_orig(5)*cos(qBody1) - R/2*(dq_orig(6) + dq_orig(7) - 2*dq_orig(0)));
+      // cFilt->AddSample(c);
+      // //if(Tf(2,1) > 0)
+      // {
+      // for(int i=0; i<8; i++) outFile << dq(i) << ", ";
+      // for(int i=0; i<8; i++) outFile << dqFilt->average(i) << ", ";
+      // outFile << psi << ", " << dpsi << ", " << qBody1 << ", " << dqBody1 << ", " <<  dthL << ", " << dthR << ", ";
+      // outFile << psiFilt << ", " << dpsiFilt << ", " << qBody1Filt << ", " << dqBody1Filt << ", " <<  dthLFilt << ", " << dthRFilt << ", ";
+      // for(int i=0; i<5; i++) outFile << c(i) << ", ";
+      // for(int i=0; i<5; i++) outFile << cFilt->average(i) << ", ";
+      // for(int i=0; i<8; i++) outFile << q(i) << ", "; 
+      // outFile << std::endl;
+      // }
+      
+      // arbitrary control inputs
+      // steps++;
+      // double headSign = (cos(2*3.14/80*steps*0.01) > 0) ? 1 : -1;
+      // double spinSign = (sin(2*3.14/20*steps*0.01) > 0) ? 1 : -1;
+      // double uL = ((steps < 1000) ? 0 : 5*headSign-5*spinSign);
+      // double uR = ((steps < 1000) ? 0 : 5*headSign+5*spinSign);
+      /*double head = cos(2*3.14/10*steps*0.01);
+      double spin = ( (sin(2*3.14/40*steps*0.01)>0) ? -1 : 1 );
+      double uL = ((steps < 1000) ? 0 : 60*head-200*spin);
+      double uR = ((steps < 1000) ? 0 : 60*head+200*spin);*/
 
-      // Integrate Dynamics
-//      xFull = xFull + dt*x_dot;
-//
-//      thR_hat = xFull[4];
-//      dthR_hat = xFull[5];
-//      f_thR = xFull[6];
-//      qBody1_hat = xFull[7];
-//      dqBody1_hat = xFull[8];
-//      f_qBody1 = xFull[9];
-
+      int beginStep = 500;
+      double thWheelRef = 0;//2*sin(2*M_PI*(steps-beginStep)*0.001/20);
+      double dthWheelRef = 0;//0.1;
+      double u = ((steps>beginStep)?(250*(qBody1 - 0) + 40*(dqBody1Filt - 0) + 1*((thL + thR)/2 - thWheelRef) + 10*((dthLFilt+dthRFilt)/2 - dthWheelRef)):0);
+      mForces << 0, 0, 0, 0, 0, 0, u, u;
+      m3DOF->setForces(mForces);
+      
       SimWindow::timeStepping();
     }
+
+
+    // void MyWindow::keyboard(unsigned char _key, int _x, int _y)
+    // {
+    //   double incremental = 0.01;
+
+    //   switch (_key)
+    //   {
+    //     case 'w':  // Move forward
+    //       break;
+    //     case 's':  // Move backward
+    //       break;
+    //     case 'a':  // Turn left
+    //       break;
+    //     case 'd':  // Turn right
+    //       break;
+    //     default:
+    //       // Default keyboard control
+    //       SimWindow::keyboard(_key, _x, _y);
+    //       break;
+    //   }
+    //   glutPostRedisplay();
+    // }
+
     ~MyWindow() {
       outFile.close();     
     }
@@ -589,26 +276,22 @@ class MyWindow : public dart::gui::SimWindow
 
     Eigen::VectorXd dof1;
 
-    std::unique_ptr<Controller> mController;
+    double psi, dpsi, qBody1, dqBody1, dthL, dthR;
+    double psiFilt, dpsiFilt, qBody1Filt, dqBody1Filt, dthLFilt, dthRFilt;
 
-    double dist;
-    double psi, dpsi, thL, dthL, thR, dthR, qBody1, dqBody1; // State Variables
-    double thR_hat, dthR_hat, f_thR, qBody1_hat, dqBody1_hat, f_qBody1; // Observer Variables
-    double psiFilt, dpsiFilt, qBody1Filt, dqBody1Filt, dthLFilt, dthRFilt; // Filtered Variables
-
-    double L, R;
-    double tauL, tauR;
+    double R;
+    double L;
     
     int steps;
-    double ddp_dt;
 
     Eigen::Matrix<double, 8, 1> mForces;
    
     ofstream outFile; 
 
     filter *dqFilt, *cFilt;
-    ControlTrajectory ctl_traj;
-    StateTrajectory state_traj;
+    ControlTrajectory ddp_ctl_traj;
+    StateTrajectory ddp_state_traj;
+    // Dynamics *ddp_dyn;
 };
 
 
@@ -639,16 +322,91 @@ SkeletonPtr createFloor()
 }
 
 
+void getSimple(SkeletonPtr threeDOF, Eigen::Matrix<double, 18, 1> q) 
+{
+  // Load the full body with fixed wheel and set the pose q
+  dart::utils::DartLoader loader;
+  SkeletonPtr krangFixedWheel =
+      loader.parseSkeleton("/home/panda/myfolder/wholebodycontrol/09-URDF/KrangFixedWheels/krang_fixed_wheel.urdf");
+  krangFixedWheel->setName("m18DOF");
+  krangFixedWheel->setPositions(q);
+  
+  // Body Mass
+  double mFull = krangFixedWheel->getMass(); 
+  double mLWheel = krangFixedWheel->getBodyNode("LWheel")->getMass();
+  double mBody = mFull - mLWheel;
+
+  // Body COM
+  Eigen::Vector3d bodyCOM;
+  dart::dynamics::Frame* baseFrame = krangFixedWheel->getBodyNode("Base");
+  bodyCOM = (mFull*krangFixedWheel->getCOM(baseFrame) - mLWheel*krangFixedWheel->getBodyNode("LWheel")->getCOM(baseFrame))/(mFull - mLWheel);
+
+  // Body inertia
+  int nBodies = krangFixedWheel->getNumBodyNodes();
+  Eigen::Matrix3d iMat;
+  Eigen::Matrix3d iBody = Eigen::Matrix3d::Zero();
+  double ixx, iyy, izz, ixy, ixz, iyz;  
+  Eigen::Matrix3d rot;
+  Eigen::Vector3d t;
+  Eigen::Matrix3d tMat;
+  dart::dynamics::BodyNodePtr b;
+  double m;
+  for(int i=1; i<nBodies; i++){ // Skipping LWheel
+    b = krangFixedWheel->getBodyNode(i);
+    b->getMomentOfInertia(ixx, iyy, izz, ixy, ixz, iyz);
+    rot = b->getTransform(baseFrame).rotation(); 
+    t = bodyCOM - b->getCOM(baseFrame) ; // Position vector from local COM to body COM expressed in base frame
+    m = b->getMass();
+    iMat << ixx, ixy, ixz, // Inertia tensor of the body around its CoM expressed in body frame
+            ixy, iyy, iyz,
+            ixz, iyz, izz;
+    iMat = rot*iMat*rot.transpose(); // Inertia tensor of the body around its CoM expressed in base frame
+    tMat << (t(1)*t(1)+t(2)*t(2)), (-t(0)*t(1)),          (-t(0)*t(2)),
+            (-t(0)*t(1)),          (t(0)*t(0)+t(2)*t(2)), (-t(1)*t(2)),
+            (-t(0)*t(2)),          (-t(1)*t(2)),          (t(0)*t(0)+t(1)*t(1));
+    iMat = iMat + m*tMat; // Parallel Axis Theorem
+    iBody += iMat;
+  }
+
+  // Aligning threeDOF base frame to have the y-axis pass through the CoM
+  double th = atan2(bodyCOM(2), bodyCOM(1));
+  rot << 1, 0, 0,
+         0, cos(th), sin(th),
+         0, -sin(th), cos(th);
+  bodyCOM = rot*bodyCOM;
+  iBody = rot*iBody*rot.transpose();
+
+  // Set the 3 DOF robot parameters
+  threeDOF->getBodyNode("Base")->setMomentOfInertia(iBody(0,0), iBody(1,1), iBody(2,2), iBody(0,1), iBody(0,2), iBody(1,2));
+  threeDOF->getBodyNode("Base")->setLocalCOM(bodyCOM);
+  threeDOF->getBodyNode("Base")->setMass(mBody);
+
+  // Print them out
+  cout << "mass: " << mBody << endl;
+  cout << "COM: " << bodyCOM(0) << ", " << bodyCOM(1) << ", " << bodyCOM(2) << endl;
+  cout << "ixx: " << iBody(0,0) << ", iyy: " << iBody(1,1) << ", izz: " << iBody(2,2) << endl;
+  cout << "ixy: " << iBody(0,1) << ", ixz: " << iBody(0,2) << ", iyz: " << iBody(1,2) << endl;
+}
+
 SkeletonPtr create3DOF_URDF()
 {
   // Load the Skeleton from a file
   dart::utils::DartLoader loader;
-  SkeletonPtr threeDOF =
-      loader.parseSkeleton("/Users/BakerStreetBakery/Desktop/Krang/10d-3DHighLevelControllerC-2Ddart/examples/3dofddp/3dof.urdf");
+  SkeletonPtr threeDOF = 
+      //loader.parseSkeleton("/home/krang/dart/09-URDF/3DOF-WIP/3dof.urdf");
+      loader.parseSkeleton("/home/panda/myfolder/wholebodycontrol/09-URDF/3DOF-WIP/3dof.urdf");
   threeDOF->setName("m3DOF");
 
+  // Set parameters of Body that reflect the ones we will actually have 
+  Eigen::Matrix<double, 18, 1> qInit;
+  qInit << -M_PI/4, -4.588, 0.0, 0.0, 0.0548, -1.0253, 0.0, -2.1244, -1.0472, 1.5671, 0.0, -0.0548, 1.0253, 0.0, 2.1244, 1.0472, 0.0037, 0.0;
+  getSimple(threeDOF, qInit);   
+  
+  threeDOF->getJoint(0)->setDampingCoefficient(0, 15);
+  threeDOF->getJoint(1)->setDampingCoefficient(0, 15);
+
   // Get it into a useful configuration
-  double psiInit = M_PI/4, qBody1Init = 0.01*M_PI;//M_PI;//0;
+  double psiInit = M_PI/4, qBody1Init = 0;
   Eigen::Transform<double, 3, Eigen::Affine> baseTf = Eigen::Transform<double, 3, Eigen::Affine>::Identity();
   // RotX(pi/2)*RotY(-pi/2+psi)*RotX(-qBody1)
   baseTf.prerotate(Eigen::AngleAxisd(-qBody1Init,Eigen::Vector3d::UnitX())).prerotate(Eigen::AngleAxisd(-M_PI/2+psiInit,Eigen::Vector3d::UnitY())).prerotate(Eigen::AngleAxisd(M_PI/2, Eigen::Vector3d::UnitX()));
@@ -677,5 +435,3 @@ int main(int argc, char* argv[])
   window.initWindow(1280,720, "3DOF URDF");
   glutMainLoop();
 }
-
-

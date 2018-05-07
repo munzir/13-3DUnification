@@ -264,8 +264,8 @@ class MyWindow : public dart::gui::SimWindow
 
       util::DefaultLogger logger;
       Scalar tf = 20;
-      Scalar dt = 0.01;
-      auto time_steps = util::time_steps(tf, dt);
+      Scalar ddp_dt = 0.01;
+      auto time_steps = util::time_steps(tf, ddp_dt);
       int max_iterations = 15;
       bool verbose = true;
 
@@ -298,7 +298,7 @@ class MyWindow : public dart::gui::SimWindow
       TerminalCost cp_terminal_cost(xf, Qf);
 
       // initialize DDP for trajectory planning
-      DDP_Opt trej_ddp (dt, time_steps, max_iterations, &logger, verbose);
+      DDP_Opt trej_ddp (ddp_dt, time_steps, max_iterations, &logger, verbose);
 
       // Get initial trajectory from DDP
       OptimizerResult<Dynamics> traj_results = trej_ddp.run(x0, u, krangDynamics, cp_cost, cp_terminal_cost);
@@ -329,7 +329,7 @@ class MyWindow : public dart::gui::SimWindow
 //      Eigen::Matrix<double, 4, 4> Tf = m3DOF->getBodyNode(0)->getTransform().matrix();
 //      psi =  atan2(Tf(0,0),-Tf(1,0));
 //      qBody1 = atan2(Tf(0,1)*cos(psi) + Tf(1,1)*sin(psi), Tf(2,1));
-//      Eigen::VectorXd q = m3DOF->getPositions();
+      Eigen::VectorXd q = m3DOF->getPositions();
 //      Eigen::VectorXd xPlane(3);
 //      xPlane << q(0),q(1),0;
 //
@@ -526,9 +526,10 @@ class MyWindow : public dart::gui::SimWindow
 
       double dt = m3DOF->getTimeStep();
 
-      State cur_x = state_traj.col(steps);
-      State next_x = state_traj.col(steps + 1);
-      Control cur_u = ctl_traj.col(steps);
+      double ddp_step = steps / (ddp_dt / dt);
+      State cur_x = state_traj.col(ddp_step);
+      State next_x = state_traj.col(ddp_step + 1);
+      Control cur_u = ctl_traj.col(ddp_step);
 
       param p;
       p.R = 2.500000e-01; p.mw = 0.5; p.Iw = 5.100000e-03; p.L = 0.8; p.g=9.800000e+00;
@@ -598,6 +599,7 @@ class MyWindow : public dart::gui::SimWindow
     double tauL, tauR;
     
     int steps;
+    double ddp_dt;
 
     Eigen::Matrix<double, 8, 1> mForces;
    

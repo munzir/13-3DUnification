@@ -526,7 +526,8 @@ class MyWindow : public dart::gui::SimWindow
 
       double dt = m3DOF->getTimeStep();
 
-      double ddp_step = steps / (ddp_dt / dt);
+      // TODO: CHANGE HARD CODED DT DIFFERENCE
+      double ddp_step = steps / 10;
       State cur_x = state_traj.col(ddp_step);
       State next_x = state_traj.col(ddp_step + 1);
       Control cur_u = ctl_traj.col(ddp_step);

@@ -67,7 +67,7 @@ class MyWindow : public dart::gui::SimWindow
       cFilt = new filter(5, 50);
       R = 0.25;
       L = 0.68;//*6;
-
+      mpc_writer.open_file("mpc_traj.csv");
       computeDDPTrajectory();
 
     }
@@ -142,6 +142,7 @@ class MyWindow : public dart::gui::SimWindow
       ddp_ctl_traj = DDP_traj.control_trajectory;
 
       writer.save_trajectory(ddp_state_traj, ddp_ctl_traj, "initial_traj.csv");
+
     }
 
     State getCurrentState() {
@@ -215,6 +216,10 @@ class MyWindow : public dart::gui::SimWindow
         
         results_horizon = ddp_horizon.run_horizon(cur_state, hor_control, hor_traj_states, *ddp_dyn, running_cost_horizon, terminal_cost_horizon);
         u = results_horizon.control_trajectory.col(0);
+
+
+        mpc_writer.save_step(cur_state, u);
+
       }
 
       double tau_L = 0, tau_R = 0;
@@ -360,6 +365,8 @@ class MyWindow : public dart::gui::SimWindow
     StateTrajectory ddp_state_traj;
     Dynamics *ddp_dyn;
     Control u;
+    CSV_writer<Scalar> mpc_writer;
+
 };
 
 

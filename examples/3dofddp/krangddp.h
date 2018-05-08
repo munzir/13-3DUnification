@@ -287,8 +287,23 @@ template <class T>
 struct CSV_writer {
     using StateTrajectory   = Eigen::Matrix<T, 8, Eigen::Dynamic>;
     using ControlTrajectory = Eigen::Matrix<T, 2, Eigen::Dynamic>;
+    using State = Eigen::Matrix<T, 8, 1>;
+    using Control = Eigen::Matrix<T, 2, 1>;
 
-    CSV_writer() {}
+    CSV_writer() {
+
+    }
+
+    void open_file(char* fileName) {
+        outFile.open(fileName); 
+    }
+
+    void save_step(State x, Control u) {
+        for (int j = 0; j < 8; j++) {
+            outFile << x(j) << ", ";
+        }
+        outFile << u(0) << "," << u(1) << std::endl;
+    }
 
     void save_trajectory(StateTrajectory &xs, ControlTrajectory &us, std::string fileName) {
         std::ofstream outFile;
@@ -308,6 +323,8 @@ struct CSV_writer {
         }
         outFile.close();
     }
+
+    std::ofstream outFile;
 
 };
 

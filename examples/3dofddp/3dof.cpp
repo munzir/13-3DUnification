@@ -60,6 +60,8 @@ class MyWindow : public dart::gui::SimWindow
       qInit = m3DOF->getPositions();
       psi = 0; // Heading Angle
       steps = 0;
+      mpc_steps = -1; 
+      mpc_dt = 0.01;
       outFile.open("constraints.csv");
       dqFilt = new filter(8, 50);
       cFilt = new filter(5, 50);
@@ -102,14 +104,15 @@ class MyWindow : public dart::gui::SimWindow
       util::DefaultLogger logger;
       bool verbose = true;
       Scalar tf = 20;
-      Scalar dt = 0.01;
-      auto time_steps = util::time_steps(tf, dt);
+      auto time_steps = util::time_steps(tf, mpc_dt);
       int max_iterations = 15;
+      
 
-       Dynamics ddp_dyn(p);
+      ddp_dyn = new Dynamics(p);
+       // Dynamics ddp_dyn(p);
 
       // Initial state th, dth, x, dx, desired state, initial control sequence
-      Dynamics::State x0 = Dynamics::State::Zero();
+      State x0 = getCurrentState();       
       Dynamics::State xf; xf << 2, 0, 0, 0, 0, 0, 0.01, 5;
       Dynamics::ControlTrajectory u = Dynamics::ControlTrajectory::Zero(2, time_steps);
 
@@ -130,22 +133,19 @@ class MyWindow : public dart::gui::SimWindow
       TerminalCost cp_terminal_cost(xf, Qf);
 
       // initialize DDP for trajectory planning
-      DDP_Opt trej_ddp (dt, time_steps, max_iterations, &logger, verbose);
+      DDP_Opt trej_ddp (mpc_dt, time_steps, max_iterations, &logger, verbose);
 
       // Get initial trajectory from DDP
-      OptimizerResult<Dynamics> DDP_traj = trej_ddp.run(x0, u, ddp_dyn, cp_cost, cp_terminal_cost);
+      OptimizerResult<Dynamics> DDP_traj = trej_ddp.run(x0, u, *ddp_dyn, cp_cost, cp_terminal_cost);
 
-      StateTrajectory ddp_state_traj = DDP_traj.state_trajectory;
-      ControlTrajectory ddp_ctl_traj = DDP_traj.control_trajectory;
+      ddp_state_traj = DDP_traj.state_trajectory;
+      ddp_ctl_traj = DDP_traj.control_trajectory;
 
       writer.save_trajectory(ddp_state_traj, ddp_ctl_traj, "initial_traj.csv");
     }
 
-    void timeStepping() override
-    {
-      steps++;
-
-      // Read Positions, Speeds, Transform speeds to world coordinates and filter the speeds
+    State getCurrentState() {
+      // Read Positions, Speeds, Transform speeds to world coordinates and filter the speeds      
       Eigen::Matrix<double, 4, 4> Tf = m3DOF->getBodyNode(0)->getTransform().matrix();
       psi =  atan2(Tf(0,0), -Tf(1,0));
       qBody1 = atan2(Tf(0,1)*cos(psi) + Tf(1,1)*sin(psi), Tf(2,1));
@@ -167,35 +167,100 @@ class MyWindow : public dart::gui::SimWindow
       dthR = dq(7) + dqBody1;
       dthRFilt = dqFilt->average(7) + dqBody1Filt;
 
+
+      // State: x, psi, theta, dx, dpsi, dtheta, x0, y0
+      State cur_state = Dynamics::State::Zero();
+      cur_state << R/2 * (thL + thR), psi, qBody1, dq(3) * cos(psi) + dq(4) * sin(psi), dpsi, dqBody1, q(3), q(4); 
+      return cur_state;
+    }
+
+    void timeStepping() override
+    {
+      steps++;
+
+      State cur_state = getCurrentState(); 
+
       // MPC DDP RECEDING HORIZON CALCULATION
-      // double dt = 0.01; 
-      // int max_iterations = 15; 
-      // bool verbose = true; 
-      // util::DefaultLogger logger;
+      int beginStep = 500; 
+      int cur_mpc_steps = ((steps > beginStep) ? ((steps - beginStep) / 10) : -1);
 
-      // State cur_state = getState(); 
-      // mpc_horizon = 10; 
-      // Dynamics::State target_state = ddp_state_traj.col(steps + mpc_horizon);
-      // Dynamics::ControlTrajectory hor_control = Dynamics::ControlTrajectory::Zero(2, mpc_horizon);
-      // Dynamics::StateTrajectory hor_traj_states = ddp_state_traj.block(0, steps, 8, mpc_horizon);
+      if (cur_mpc_steps > mpc_steps) {
+        mpc_steps = cur_mpc_steps;
+        int max_iterations = 15; 
+        bool verbose = true; 
+        util::DefaultLogger logger;
+        int mpc_horizon = 10; 
+        
+        Dynamics::State target_state;
+        target_state = ddp_state_traj.col(mpc_steps + mpc_horizon);
+        Dynamics::ControlTrajectory hor_control = Dynamics::ControlTrajectory::Zero(2, mpc_horizon);
+        Dynamics::StateTrajectory hor_traj_states = ddp_state_traj.block(0, mpc_steps, 8, mpc_horizon);
+        
+        DDP_Opt ddp_horizon (mpc_dt, mpc_horizon, max_iterations, &logger, verbose);
+        
+        Cost::StateHessian Q_mpc, Qf_mpc;
+        Cost::ControlHessian ctl_R;
+        
+        ctl_R.setZero();
+        ctl_R.diagonal() << 0.01, 0.01;
+        Q_mpc.setZero();
+        Q_mpc.diagonal() << 0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1;
+        Qf_mpc.setZero();
+        Qf_mpc.diagonal() << 0, 1e4, 1e4, 1e4, 1e4, 1e4, 1e4, 1e4;
+        Cost running_cost_horizon(target_state, Q_mpc, ctl_R);
+        TerminalCost terminal_cost_horizon(target_state, Qf_mpc);
+        
+        OptimizerResult<Dynamics> results_horizon;
+        results_horizon.control_trajectory = hor_control;
+        
+        results_horizon = ddp_horizon.run_horizon(cur_state, hor_control, hor_traj_states, *ddp_dyn, running_cost_horizon, terminal_cost_horizon);
+        u = results_horizon.control_trajectory.col(0);
+      }
 
-      // DDP_Opt ddp_horizon (dt, mpc_horizon, max_iterations, &logger, verbose);
+      double tau_L = 0, tau_R = 0;
+      if(mpc_steps > -1) {
+        /*
+        // *************************************** IDEA 1
+        double ddth = u(0);
+        double tau_0 = u(1);
+        double ddx = (ddp_state_traj(3, mpc_steps+1) -  ddp_state_traj(3, mpc_steps))/mpc_dt;
+        double ddpsi = (ddp_state_traj(4, mpc_steps+1) -  ddp_state_traj(4, mpc_steps))/mpc_dt;
+        Eigen::Vector3d ddq, dq;
+        ddq << ddx, ddpsi, ddth;
+        dq = cur_state.segment(3,3);
+        c_forces dy_forces = ddp_dyn->dynamic_forces(cur_state, u);
+        //double tau_1 = (dy_forces.A.block<1,3>(2,0)*ddq) + (dy_forces.C.block<1,3>(2,0)*dq) + (dy_forces.Q(2)) - (dy_forces.Gamma_fric(2));
+        double tau_1 = dy_forces.A.block<1,3>(2,0)*ddq;
+        tau_1 += dy_forces.C.block<1,3>(2,0)*dq;
+        tau_1 += dy_forces.Q(2);
+        tau_1 -= dy_forces.Gamma_fric(2);
+        tau_L = -0.5*(tau_1+tau_0);
+        tau_R = -0.5*(tau_1-tau_0); */
 
-      // Cost::StateHessian Q_mpc, Qf_mpc;
-      // Q_mpc.setZero();
-      // Q_mpc.diagonal() << 0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1;
-      // Qf_mpc.setZero();
-      // Qf_mpc.diagonal() << 0, 1e4, 1e4, 1e4, 1e4, 1e4, 1e4, 1e4;
-      // Cost running_cost_horizon(target_state, Q_mpc, R);
-      // TerminalCost terminal_cost_horizon(target_state, Qf_mpc);
+        // *************************************** IDEA 2
+        double ddth = u(0);
+        double tau_0 = u(1);
+        State xdot = ddp_dyn->f(cur_state, u);
+        double ddx = xdot(3);
+        double ddpsi = xdot(4);
+        Eigen::Vector3d ddq, dq;
+        ddq << ddx, ddpsi, ddth;
+        dq = cur_state.segment(3,3);
+        c_forces dy_forces = ddp_dyn->dynamic_forces(cur_state, u);
+        //double tau_1 = (dy_forces.A.block<1,3>(2,0)*ddq) + (dy_forces.C.block<1,3>(2,0)*dq) + (dy_forces.Q(2)) - (dy_forces.Gamma_fric(2));
+        double tau_1 = dy_forces.A.block<1,3>(2,0)*ddq;
+        tau_1 += dy_forces.C.block<1,3>(2,0)*dq;
+        tau_1 += dy_forces.Q(2);
+        tau_1 -= dy_forces.Gamma_fric(2);
+        tau_L = -0.5*(tau_1+tau_0);
+        tau_R = -0.5*(tau_1-tau_0);
 
-      // OptimizerResult<Dynamics> hor_results;
-      // hor_results.control_trajectory = hor_control;
-
-      // results_horizon = ddp_horizon.run_horizon(cur_state, hor_control, hor_traj_states, ddp_dyn, running_cost_horizon, terminal_cost_horizon);
-
-      // Dynamics::Control cur_control = results_horizon.control_trajectory.col(0);
-
+        if(abs(tau_L) > 60 | abs(tau_R) > 60){
+          cout << "step: " << steps << ", tau_0: " << tau_0 << ", tau_1: " << tau_1 << ", tau_L: " << tau_L << ", tau_R: " << tau_R << endl;
+        }
+      }
+      mForces << 0, 0, 0, 0, 0, 0, tau_L, tau_R;
+      m3DOF->setForces(mForces);
 
       
       // Constraints
@@ -230,12 +295,12 @@ class MyWindow : public dart::gui::SimWindow
       double uL = ((steps < 1000) ? 0 : 60*head-200*spin);
       double uR = ((steps < 1000) ? 0 : 60*head+200*spin);*/
 
-      int beginStep = 500;
-      double thWheelRef = 0;//2*sin(2*M_PI*(steps-beginStep)*0.001/20);
-      double dthWheelRef = 0;//0.1;
-      double u = ((steps>beginStep)?(250*(qBody1 - 0) + 40*(dqBody1Filt - 0) + 1*((thL + thR)/2 - thWheelRef) + 10*((dthLFilt+dthRFilt)/2 - dthWheelRef)):0);
-      mForces << 0, 0, 0, 0, 0, 0, u, u;
-      m3DOF->setForces(mForces);
+      // int beginStep = 500;
+      // double thWheelRef = 0;//2*sin(2*M_PI*(steps-beginStep)*0.001/20);
+      // double dthWheelRef = 0;//0.1;
+      // double u = ((steps>beginStep)?(250*(qBody1 - 0) + 40*(dqBody1Filt - 0) + 1*((thL + thR)/2 - thWheelRef) + 10*((dthLFilt+dthRFilt)/2 - dthWheelRef)):0);
+      // mForces << 0, 0, 0, 0, 0, 0, u, u;
+      // m3DOF->setForces(mForces);
       
       SimWindow::timeStepping();
     }
@@ -283,6 +348,8 @@ class MyWindow : public dart::gui::SimWindow
     double L;
     
     int steps;
+    int mpc_steps;
+    double mpc_dt;
 
     Eigen::Matrix<double, 8, 1> mForces;
    
@@ -291,7 +358,8 @@ class MyWindow : public dart::gui::SimWindow
     filter *dqFilt, *cFilt;
     ControlTrajectory ddp_ctl_traj;
     StateTrajectory ddp_state_traj;
-    // Dynamics *ddp_dyn;
+    Dynamics *ddp_dyn;
+    Control u;
 };
 
 
@@ -402,11 +470,11 @@ SkeletonPtr create3DOF_URDF()
   qInit << -M_PI/4, -4.588, 0.0, 0.0, 0.0548, -1.0253, 0.0, -2.1244, -1.0472, 1.5671, 0.0, -0.0548, 1.0253, 0.0, 2.1244, 1.0472, 0.0037, 0.0;
   getSimple(threeDOF, qInit);   
   
-  threeDOF->getJoint(0)->setDampingCoefficient(0, 15);
-  threeDOF->getJoint(1)->setDampingCoefficient(0, 15);
+  threeDOF->getJoint(0)->setDampingCoefficient(0, 0.5);
+  threeDOF->getJoint(1)->setDampingCoefficient(0, 0.5);
 
   // Get it into a useful configuration
-  double psiInit = M_PI/4, qBody1Init = 0;
+  double psiInit = 0, qBody1Init = 0;
   Eigen::Transform<double, 3, Eigen::Affine> baseTf = Eigen::Transform<double, 3, Eigen::Affine>::Identity();
   // RotX(pi/2)*RotY(-pi/2+psi)*RotX(-qBody1)
   baseTf.prerotate(Eigen::AngleAxisd(-qBody1Init,Eigen::Vector3d::UnitX())).prerotate(Eigen::AngleAxisd(-M_PI/2+psiInit,Eigen::Vector3d::UnitY())).prerotate(Eigen::AngleAxisd(M_PI/2, Eigen::Vector3d::UnitX()));

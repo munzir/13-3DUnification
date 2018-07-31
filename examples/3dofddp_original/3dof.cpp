@@ -159,7 +159,7 @@ class MyWindow : public dart::gui::SimWindow
       m3DOF = create3DOF_URDF();
 
       setWorld(world);
-      // m3DOF = world->getSkeleton("m3DOF");
+      m18DOF = world->getSkeleton("krang");
       qInit = m3DOF->getPositions();
       psi = 0; // Heading Angle
       steps = 0;
@@ -383,8 +383,13 @@ class MyWindow : public dart::gui::SimWindow
           cout << "step: " << steps << ", tau_0: " << tau_0 << ", tau_1: " << tau_1 << ", tau_L: " << tau_L << ", tau_R: " << tau_R << endl;
         }
       }
-      mForces << 0, 0, 0, 0, 0, 0, tau_L, tau_R;
-      m3DOF->setForces(mForces);
+      mForces(0) = tau_L;
+      mForces(1) = tau_R;
+      const vector<size_t > index{6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24};
+      m18DOF->setForces(index, mForces);
+
+      // mForces << 0, 0, 0, 0, 0, 0, tau_L, tau_R;
+      // m3DOF->setForces(mForces);
 
       
       // Constraints
@@ -460,6 +465,7 @@ class MyWindow : public dart::gui::SimWindow
   protected:
 
     SkeletonPtr m3DOF;
+    SkeletonPtr m18DOF;
 
     Eigen::VectorXd qInit;
 
@@ -475,7 +481,7 @@ class MyWindow : public dart::gui::SimWindow
     int mpc_steps;
     double mpc_dt;
 
-    Eigen::Matrix<double, 8, 1> mForces;
+    Eigen::Matrix<double, 19, 1> mForces;   
    
     ofstream outFile; 
 
@@ -639,6 +645,10 @@ dart::dynamics::SkeletonPtr createKrang() {
   file.close();
 
   krang->setPositions(q);
+  int joints = krang->getNumJoints();
+  for(int i=3; i < joints; i++) {
+    krang->getJoint(i)->setActuatorType(dart::dynamics::Joint::ActuatorType::LOCKED);
+  }
 
   return krang;
 }

@@ -41,27 +41,79 @@ class filter {
     
 };
 
-void getSimple(SkeletonPtr threeDOF, Eigen::Matrix<double, 18, 1> q) 
+Eigen::Vector3d getBodyCOM(dart::dynamics::SkeletonPtr robot) {
+  double fullMass = robot->getMass();
+  double wheelMass = robot->getBodyNode("LWheel")->getMass();
+  return (fullMass*robot->getCOM() - wheelMass*robot->getBodyNode("LWheel")->getCOM() - wheelMass*robot->getBodyNode("RWheel")->getCOM())/(fullMass - 2*wheelMass);
+}
+
+void getSimple(SkeletonPtr threeDOF, SkeletonPtr krang) 
 {
   // Load the full body with fixed wheel and set the pose q
-  dart::utils::DartLoader loader;
-  SkeletonPtr krangFixedWheel =
-      loader.parseSkeleton("/home/krang/dart/09-URDF/KrangFixedWheels/krang_fixed_wheel.urdf");
-  krangFixedWheel->setName("m18DOF");
-  krangFixedWheel->setPositions(q);
+  // dart::utils::DartLoader loader;
+  // SkeletonPtr krangFixedWheel =
+  //     loader.parseSkeleton("/home/krang/dart/09-URDF/KrangFixedWheels/krang_fixed_wheel.urdf");
   
   // Body Mass
-  double mFull = krangFixedWheel->getMass(); 
-  double mLWheel = krangFixedWheel->getBodyNode("LWheel")->getMass();
-  double mBody = mFull - mLWheel;
+  double mFull = krang->getMass(); 
+  double mLWheel = krang->getBodyNode("LWheel")->getMass();
+  double mRWheel = krang->getBodyNode("RWheel")->getMass();
+  double mBody = mFull - mLWheel - mRWheel;
 
   // Body COM
-  Eigen::Vector3d bodyCOM;
-  dart::dynamics::Frame* baseFrame = krangFixedWheel->getBodyNode("Base");
-  bodyCOM = (mFull*krangFixedWheel->getCOM(baseFrame) - mLWheel*krangFixedWheel->getBodyNode("LWheel")->getCOM(baseFrame))/(mFull - mLWheel);
+  Eigen::Matrix<double, 4, 4> BaseTf;
+  Eigen::Matrix<double, 25, 1> q;
+  Eigen::Vector3d xyz0; // position of frame 0 in the world frame represented in the world frame
+  double psi;
+  double qBody1;
+  Eigen::Matrix<double, 18, 1> qBody;
+  // Eigen::Matrix3d Rot0;
+  
+  // BaseTf = krang->getBodyNode(0)->getTransform().matrix();
+  // q = krang->getPositions();
+  // xyz0 = q.segment(3,3); // position of frame 0 in the world frame represented in the world frame
+  // psi =  atan2(BaseTf(0,0), -BaseTf(1,0));
+  // qBody1 = atan2(BaseTf(0,1)*cos(psi) + BaseTf(1,1)*sin(psi), BaseTf(2,1));
+  // qBody(0) = qBody1;
+  // qBody.tail(17) = q.tail(17);
+  // Rot0 << cos(psi), sin(psi), 0,
+  //         -sin(psi), cos(psi), 0,
+  //         0, 0, 1;
 
-  // Body inertia
-  int nBodies = krangFixedWheel->getNumBodyNodes();
+  Eigen::Vector3d bodyCOM;
+  dart::dynamics::Frame* baseFrame = krang->getBodyNode("Base");
+  bodyCOM = (mFull*krang->getCOM(baseFrame) - mLWheel*krang->getBodyNode("LWheel")->getCOM(baseFrame) - mLWheel*krang->getBodyNode("RWheel")->getCOM(baseFrame))/(mFull - mLWheel - mRWheel);
+
+
+  // // Body inertia
+  // int nBodies = krangFixedWheel->getNumBodyNodes();
+  // Eigen::Matrix3d iMat;
+  // Eigen::Matrix3d iBody = Eigen::Matrix3d::Zero();
+  // double ixx, iyy, izz, ixy, ixz, iyz;  
+  // Eigen::Matrix3d rot;
+  // Eigen::Vector3d t;
+  // Eigen::Matrix3d tMat;
+  // dart::dynamics::BodyNodePtr b;
+  // double m;
+  // for(int i=1; i<nBodies; i++){ // Skipping LWheel
+  //   b = krangFixedWheel->getBodyNode(i);
+  //   b->getMomentOfInertia(ixx, iyy, izz, ixy, ixz, iyz);
+  //   rot = b->getTransform(baseFrame).rotation(); 
+  //   t = bodyCOM - b->getCOM(baseFrame) ; // Position vector from local COM to body COM expressed in base frame
+  //   m = b->getMass();
+  //   iMat << ixx, ixy, ixz, // Inertia tensor of the body around its CoM expressed in body frame
+  //           ixy, iyy, iyz,
+  //           ixz, iyz, izz;
+  //   iMat = rot*iMat*rot.transpose(); // Inertia tensor of the body around its CoM expressed in base frame
+  //   tMat << (t(1)*t(1)+t(2)*t(2)), (-t(0)*t(1)),          (-t(0)*t(2)),
+  //           (-t(0)*t(1)),          (t(0)*t(0)+t(2)*t(2)), (-t(1)*t(2)),
+  //           (-t(0)*t(2)),          (-t(1)*t(2)),          (t(0)*t(0)+t(1)*t(1));
+  //   iMat = iMat + m*tMat; // Parallel Axis Theorem
+  //   iBody += iMat;
+  // }
+
+  // Body inertia (axis)
+  double m;
   Eigen::Matrix3d iMat;
   Eigen::Matrix3d iBody = Eigen::Matrix3d::Zero();
   double ixx, iyy, izz, ixy, ixz, iyz;  
@@ -69,12 +121,15 @@ void getSimple(SkeletonPtr threeDOF, Eigen::Matrix<double, 18, 1> q)
   Eigen::Vector3d t;
   Eigen::Matrix3d tMat;
   dart::dynamics::BodyNodePtr b;
-  double m;
-  for(int i=1; i<nBodies; i++){ // Skipping LWheel
-    b = krangFixedWheel->getBodyNode(i);
+  dart::dynamics::Frame* baseFrame;
+  int nBodies = krang->getNumBodyNodes();
+  baseFrame = krang->getBodyNode("Base");
+  for(int i=0; i<nBodies; i++){
+    if(i==1 || i==2) continue; // Skip wheels
+    b = krang->getBodyNode(i);
     b->getMomentOfInertia(ixx, iyy, izz, ixy, ixz, iyz);
-    rot = b->getTransform(baseFrame).rotation(); 
-    t = bodyCOM - b->getCOM(baseFrame) ; // Position vector from local COM to body COM expressed in base frame
+    rot = b->getTransform(baseFrame).rotation();
+    t = krang->getCOM(baseFrame) - b->getCOM(baseFrame) ; // Position vector from local COM to body COM expressed in base frame
     m = b->getMass();
     iMat << ixx, ixy, ixz, // Inertia tensor of the body around its CoM expressed in body frame
             ixy, iyy, iyz,
@@ -86,6 +141,7 @@ void getSimple(SkeletonPtr threeDOF, Eigen::Matrix<double, 18, 1> q)
     iMat = iMat + m*tMat; // Parallel Axis Theorem
     iBody += iMat;
   }
+
 
   // Aligning threeDOF base frame to have the y-axis pass through the CoM
   double th = atan2(bodyCOM(2), bodyCOM(1));
@@ -105,10 +161,15 @@ void getSimple(SkeletonPtr threeDOF, Eigen::Matrix<double, 18, 1> q)
   cout << "COM: " << bodyCOM(0) << ", " << bodyCOM(1) << ", " << bodyCOM(2) << endl;
   cout << "ixx: " << iBody(0,0) << ", iyy: " << iBody(1,1) << ", izz: " << iBody(2,2) << endl;
   cout << "ixy: " << iBody(0,1) << ", ixz: " << iBody(0,2) << ", iyz: " << iBody(1,2) << endl;
+
+  //Update 3DOF state
+  // TO DO: UPDATE 3DOF DQbody1 WITH DCOM
+  
+
 }
 
 
-SkeletonPtr create3DOF_URDF()
+SkeletonPtr create3DOF_URDF(SkeletonPtr krang)
 {
   // Load the Skeleton from a file
   dart::utils::DartLoader loader;
@@ -117,9 +178,10 @@ SkeletonPtr create3DOF_URDF()
   threeDOF->setName("m3DOF");
 
   // Set parameters of Body that reflect the ones we will actually have 
-  Eigen::Matrix<double, 18, 1> qInit;
-  qInit << -M_PI/4, -4.588, 0.0, 0.0, 0.0548, -1.0253, 0.0, -2.1244, -1.0472, 1.5671, 0.0, -0.0548, 1.0253, 0.0, 2.1244, 1.0472, 0.0037, 0.0;
-  getSimple(threeDOF, qInit);   
+  // Eigen::Matrix<double, 19, 1> qInit;
+  // qInit << -M_PI/4, -4.588, 0.0, 0.0, 0.0548, -1.0253, 0.0, -2.1244, -1.0472, 1.5671, 0.0, -0.0548, 1.0253, 0.0, 2.1244, 1.0472, 0.0037, 0.0;
+  // qInit << krang->getPositions();
+  getSimple(threeDOF, krang);   
   
   threeDOF->getJoint(0)->setDampingCoefficient(0, 0.5);
   threeDOF->getJoint(1)->setDampingCoefficient(0, 0.5);
@@ -156,10 +218,11 @@ class MyWindow : public dart::gui::SimWindow
     MyWindow(const WorldPtr& world)
     {
       cout << "8" << endl;
-      m3DOF = create3DOF_URDF();
+  
 
       setWorld(world);
-      m18DOF = world->getSkeleton("krang");
+      mkrang = world->getSkeleton("krang");
+      m3DOF = create3DOF_URDF(mkrang);
       qInit = m3DOF->getPositions();
       psi = 0; // Heading Angle
       steps = 0;
@@ -175,6 +238,9 @@ class MyWindow : public dart::gui::SimWindow
 
       computeDDPTrajectory();
       cout << "10" << endl;
+
+      world3dof = std::make_shared<World>();
+      world3dof->addSkeleton(m3DOF);
 
     }
 
@@ -343,23 +409,6 @@ class MyWindow : public dart::gui::SimWindow
 
       double tau_L = 0, tau_R = 0;
       if(mpc_steps > -1) {
-        /*
-        // *************************************** IDEA 1
-        double ddth = u(0);
-        double tau_0 = u(1);
-        double ddx = (ddp_state_traj(3, mpc_steps+1) -  ddp_state_traj(3, mpc_steps))/mpc_dt;
-        double ddpsi = (ddp_state_traj(4, mpc_steps+1) -  ddp_state_traj(4, mpc_steps))/mpc_dt;
-        Eigen::Vector3d ddq, dq;
-        ddq << ddx, ddpsi, ddth;
-        dq = cur_state.segment(3,3);
-        c_forces dy_forces = ddp_dyn->dynamic_forces(cur_state, u);
-        //double tau_1 = (dy_forces.A.block<1,3>(2,0)*ddq) + (dy_forces.C.block<1,3>(2,0)*dq) + (dy_forces.Q(2)) - (dy_forces.Gamma_fric(2));
-        double tau_1 = dy_forces.A.block<1,3>(2,0)*ddq;
-        tau_1 += dy_forces.C.block<1,3>(2,0)*dq;
-        tau_1 += dy_forces.Q(2);
-        tau_1 -= dy_forces.Gamma_fric(2);
-        tau_L = -0.5*(tau_1+tau_0);
-        tau_R = -0.5*(tau_1-tau_0); */
 
         // *************************************** IDEA 2
         double ddth = u(0);
@@ -386,76 +435,12 @@ class MyWindow : public dart::gui::SimWindow
       mForces(0) = tau_L;
       mForces(1) = tau_R;
       const vector<size_t > index{6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24};
-      m18DOF->setForces(index, mForces);
+      mkrang->setForces(index, mForces);
 
-      // mForces << 0, 0, 0, 0, 0, 0, tau_L, tau_R;
-      // m3DOF->setForces(mForces);
-
-      
-      // Constraints
-      // 1. dZ0 = 0                                               => dq_orig(4)*cos(qBody1) + dq_orig(5)*sin(qBody1) = 0
-      // 2. da3 + R/L*(dthL - dthR) = 0                           => dq_orig(1)*cos(qBody1) + dq_orig(2)*sin(qBody1) + R/L*(dq_orig(6) - dq_orig(7)) = 0 
-      // 3. da1*cos(psii) + da2*sin(psii) = 0                     => dq_orig(1)*sin(qBody1) - dq_orig(2)*cos(qBody1) = 0
-      // 4. dX0*sin(psii) - dY0*cos(psii) = 0                     => dq_orig(3) = 0
-      // 5. dX0*cos(psii) + dY0*sin(psii) - R/2*(dthL + dthR) = 0 => dq_orig(4)*sin(qBody1) - dq_orig(5)*cos(qBody1) - R/2*(dq_orig(6) + dq_orig(7) - 2*dq_orig(0)) = 0
-      // Eigen::Matrix<double, 5, 1> c;
-      // c << (dq_orig(4)*cos(qBody1) + dq_orig(5)*sin(qBody1)), (dq_orig(1)*cos(qBody1) + dq_orig(2)*sin(qBody1) + R/L*(dq_orig(6) - dq_orig(7))), (dq_orig(1)*sin(qBody1) - dq_orig(2)*cos(qBody1)), dq_orig(3), (dq_orig(4)*sin(qBody1) - dq_orig(5)*cos(qBody1) - R/2*(dq_orig(6) + dq_orig(7) - 2*dq_orig(0)));
-      // cFilt->AddSample(c);
-      // //if(Tf(2,1) > 0)
-      // {
-      // for(int i=0; i<8; i++) outFile << dq(i) << ", ";
-      // for(int i=0; i<8; i++) outFile << dqFilt->average(i) << ", ";
-      // outFile << psi << ", " << dpsi << ", " << qBody1 << ", " << dqBody1 << ", " <<  dthL << ", " << dthR << ", ";
-      // outFile << psiFilt << ", " << dpsiFilt << ", " << qBody1Filt << ", " << dqBody1Filt << ", " <<  dthLFilt << ", " << dthRFilt << ", ";
-      // for(int i=0; i<5; i++) outFile << c(i) << ", ";
-      // for(int i=0; i<5; i++) outFile << cFilt->average(i) << ", ";
-      // for(int i=0; i<8; i++) outFile << q(i) << ", "; 
-      // outFile << std::endl;
-      // }
-      
-      // arbitrary control inputs
-      // steps++;
-      // double headSign = (cos(2*3.14/80*steps*0.01) > 0) ? 1 : -1;
-      // double spinSign = (sin(2*3.14/20*steps*0.01) > 0) ? 1 : -1;
-      // double uL = ((steps < 1000) ? 0 : 5*headSign-5*spinSign);
-      // double uR = ((steps < 1000) ? 0 : 5*headSign+5*spinSign);
-      /*double head = cos(2*3.14/10*steps*0.01);
-      double spin = ( (sin(2*3.14/40*steps*0.01)>0) ? -1 : 1 );
-      double uL = ((steps < 1000) ? 0 : 60*head-200*spin);
-      double uR = ((steps < 1000) ? 0 : 60*head+200*spin);*/
-
-      // int beginStep = 500;
-      // double thWheelRef = 0;//2*sin(2*M_PI*(steps-beginStep)*0.001/20);
-      // double dthWheelRef = 0;//0.1;
-      // double u = ((steps>beginStep)?(250*(qBody1 - 0) + 40*(dqBody1Filt - 0) + 1*((thL + thR)/2 - thWheelRef) + 10*((dthLFilt+dthRFilt)/2 - dthWheelRef)):0);
-      // mForces << 0, 0, 0, 0, 0, 0, u, u;
-      // m3DOF->setForces(mForces);
       
       SimWindow::timeStepping();
     }
 
-
-    // void MyWindow::keyboard(unsigned char _key, int _x, int _y)
-    // {
-    //   double incremental = 0.01;
-
-    //   switch (_key)
-    //   {
-    //     case 'w':  // Move forward
-    //       break;
-    //     case 's':  // Move backward
-    //       break;
-    //     case 'a':  // Turn left
-    //       break;
-    //     case 'd':  // Turn right
-    //       break;
-    //     default:
-    //       // Default keyboard control
-    //       SimWindow::keyboard(_key, _x, _y);
-    //       break;
-    //   }
-    //   glutPostRedisplay();
-    // }
 
     ~MyWindow() {
       outFile.close();     
@@ -465,7 +450,7 @@ class MyWindow : public dart::gui::SimWindow
   protected:
 
     SkeletonPtr m3DOF;
-    SkeletonPtr m18DOF;
+    SkeletonPtr mkrang;
 
     Eigen::VectorXd qInit;
 
@@ -491,6 +476,9 @@ class MyWindow : public dart::gui::SimWindow
     Dynamics *ddp_dyn;
     Control u;
     CSV_writer<Scalar> mpc_writer;
+
+    WorldPtr world3dof;
+
 
 };
 
@@ -575,21 +563,6 @@ dart::dynamics::SkeletonPtr createKrang() {
   dart::dynamics::SkeletonPtr krang =
       loader.parseSkeleton("/home/krang/dart/09-URDF/Krang/KrangOld.urdf");
   krang->setName("krang");
-
-  // Initiale pose parameters
-  /*double headingInit = 0; // Angle of heading direction from positive x-axis of the world frame: we call it psi in the rest of the code
-  double qBaseInit = -M_PI/3;
-  Eigen::Vector3d xyzInit;
-  xyzInit << 0, 0, 0.28;
-  double qLWheelInit = 0;
-  double qRWheelInit = 0;
-  double qWaistInit = -4*M_PI/3;
-  double qTorsoInit = 0;
-  double qKinectInit = 0;
-  Eigen::Matrix<double, 7, 1> qLeftArmInit; 
-  qLeftArmInit << 1.102, -0.589, 0.000, -1.339, 0.000, 0.3, 0.000;
-  Eigen::Matrix<double, 7, 1> qRightArmInit;
-  qRightArmInit << -1.102, 0.589, 0.000, 1.339, 0.000, 1.4, 0.000;*/
 
   // Read initial pose from the file
   ifstream file("/home/krang/dart/Unification/10d-3DHighLevelControllerC-2Ddart_Unification/examples/3dofddp_original/defaultInit.txt");

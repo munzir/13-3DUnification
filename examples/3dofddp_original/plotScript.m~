@@ -1,0 +1,26 @@
+Aref=csvread('../../build/initial_traj.csv');
+A=csvread('../../build/mpc_traj.csv');
+Aref = Aref(1:length(A), :);
+
+xref=A(:,1); psiiref=A(:,2); thref=A(:,3);
+dxref=A(:,4); dpsiref=A(:,5); dthref=A(:,6);
+X0ref=A(:,7); Y0ref=A(:,8);
+ddthref=A(:,9); tau0ref=A(:,10);
+x=A(:,1); psii=A(:,2); th=A(:,3);
+dx=A(:,4); dpsi=A(:,5); dth=A(:,6);
+X0=A(:,7); Y0=A(:,8);
+ddth=A(:,9); tau0=A(:,10);
+
+dt=0.01;
+t=0:dt:dt*(length(A)-1);
+
+figure; 
+subplot(3,3,1); plot(t,x,t,xref); title('$x$ and ${x}_{ref}$', 'Interpreter', 'latex'); legend({'$x$', '${x}_{ref}$'}, 'Interpreter', 'latex'); grid on
+subplot(3,3,2); plot(t,dx,t,dxref); title('$x$ and ${x}_{ref}$', 'Interpreter', 'latex'); legend({'$x$', '${x}_{ref}$'}, 'Interpreter', 'latex'); grid on
+subplot(3,3,3); plot(t,psii,t,psiiref); title('$x$ and ${x}_{ref}$', 'Interpreter', 'latex'); legend({'$x$', '${x}_{ref}$'}, 'Interpreter', 'latex'); grid on
+subplot(3,3,4); plot(t,dpsi,t,dpsiref); title('$x$ and ${x}_{ref}$', 'Interpreter', 'latex'); legend({'$x$', '${x}_{ref}$'}, 'Interpreter', 'latex'); grid on
+subplot(3,3,5); plot(t,th,t,thref); title('$x$ and ${x}_{ref}$', 'Interpreter', 'latex'); legend({'$x$', '${x}_{ref}$'}, 'Interpreter', 'latex'); grid on
+subplot(3,3,6); plot(t,tau0,t,tau0ref); title('$x$ and ${x}_{ref}$', 'Interpreter', 'latex'); legend({'$x$', '${x}_{ref}$'}, 'Interpreter', 'latex'); grid on
+subplot(3,3,7); plot(t,x,t,xref); title('$x$ and ${x}_{ref}$', 'Interpreter', 'latex'); legend({'$x$', '${x}_{ref}$'}, 'Interpreter', 'latex'); grid on
+subplot(3,3,8); plot(t,x,t,xref); title('$x$ and ${x}_{ref}$', 'Interpreter', 'latex'); legend({'$x$', '${x}_{ref}$'}, 'Interpreter', 'latex'); grid on
+

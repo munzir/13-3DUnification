@@ -45,6 +45,7 @@ endif()
 include_directories(SYSTEM ${EIGEN_INCLUDE_DIR})
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+
 add_library(ddp INTERFACE)
 target_include_directories(ddp INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 file(GLOB DDP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/include/ddp/*.hpp")

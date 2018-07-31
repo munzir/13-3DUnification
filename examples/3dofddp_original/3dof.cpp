@@ -47,7 +47,7 @@ Eigen::Vector3d getBodyCOM(dart::dynamics::SkeletonPtr robot) {
   return (fullMass*robot->getCOM() - wheelMass*robot->getBodyNode("LWheel")->getCOM() - wheelMass*robot->getBodyNode("RWheel")->getCOM())/(fullMass - 2*wheelMass);
 }
 
-void getSimple(SkeletonPtr threeDOF, SkeletonPtr krang) 
+void getSimple(SkeletonPtr& threeDOF, SkeletonPtr& krang) 
 {
   // Load the full body with fixed wheel and set the pose q
   // dart::utils::DartLoader loader;
@@ -60,57 +60,10 @@ void getSimple(SkeletonPtr threeDOF, SkeletonPtr krang)
   double mRWheel = krang->getBodyNode("RWheel")->getMass();
   double mBody = mFull - mLWheel - mRWheel;
 
-  // Body COM
-  Eigen::Matrix<double, 4, 4> BaseTf;
-  Eigen::Matrix<double, 25, 1> q;
-  Eigen::Vector3d xyz0; // position of frame 0 in the world frame represented in the world frame
-  double psi;
-  double qBody1;
-  Eigen::Matrix<double, 18, 1> qBody;
-  // Eigen::Matrix3d Rot0;
-  
-  // BaseTf = krang->getBodyNode(0)->getTransform().matrix();
-  // q = krang->getPositions();
-  // xyz0 = q.segment(3,3); // position of frame 0 in the world frame represented in the world frame
-  // psi =  atan2(BaseTf(0,0), -BaseTf(1,0));
-  // qBody1 = atan2(BaseTf(0,1)*cos(psi) + BaseTf(1,1)*sin(psi), BaseTf(2,1));
-  // qBody(0) = qBody1;
-  // qBody.tail(17) = q.tail(17);
-  // Rot0 << cos(psi), sin(psi), 0,
-  //         -sin(psi), cos(psi), 0,
-  //         0, 0, 1;
 
   Eigen::Vector3d bodyCOM;
   dart::dynamics::Frame* baseFrame = krang->getBodyNode("Base");
   bodyCOM = (mFull*krang->getCOM(baseFrame) - mLWheel*krang->getBodyNode("LWheel")->getCOM(baseFrame) - mLWheel*krang->getBodyNode("RWheel")->getCOM(baseFrame))/(mFull - mLWheel - mRWheel);
-
-
-  // // Body inertia
-  // int nBodies = krangFixedWheel->getNumBodyNodes();
-  // Eigen::Matrix3d iMat;
-  // Eigen::Matrix3d iBody = Eigen::Matrix3d::Zero();
-  // double ixx, iyy, izz, ixy, ixz, iyz;  
-  // Eigen::Matrix3d rot;
-  // Eigen::Vector3d t;
-  // Eigen::Matrix3d tMat;
-  // dart::dynamics::BodyNodePtr b;
-  // double m;
-  // for(int i=1; i<nBodies; i++){ // Skipping LWheel
-  //   b = krangFixedWheel->getBodyNode(i);
-  //   b->getMomentOfInertia(ixx, iyy, izz, ixy, ixz, iyz);
-  //   rot = b->getTransform(baseFrame).rotation(); 
-  //   t = bodyCOM - b->getCOM(baseFrame) ; // Position vector from local COM to body COM expressed in base frame
-  //   m = b->getMass();
-  //   iMat << ixx, ixy, ixz, // Inertia tensor of the body around its CoM expressed in body frame
-  //           ixy, iyy, iyz,
-  //           ixz, iyz, izz;
-  //   iMat = rot*iMat*rot.transpose(); // Inertia tensor of the body around its CoM expressed in base frame
-  //   tMat << (t(1)*t(1)+t(2)*t(2)), (-t(0)*t(1)),          (-t(0)*t(2)),
-  //           (-t(0)*t(1)),          (t(0)*t(0)+t(2)*t(2)), (-t(1)*t(2)),
-  //           (-t(0)*t(2)),          (-t(1)*t(2)),          (t(0)*t(0)+t(1)*t(1));
-  //   iMat = iMat + m*tMat; // Parallel Axis Theorem
-  //   iBody += iMat;
-  // }
 
   // Body inertia (axis)
   double m;
@@ -121,9 +74,7 @@ void getSimple(SkeletonPtr threeDOF, SkeletonPtr krang)
   Eigen::Vector3d t;
   Eigen::Matrix3d tMat;
   dart::dynamics::BodyNodePtr b;
-  dart::dynamics::Frame* baseFrame;
   int nBodies = krang->getNumBodyNodes();
-  baseFrame = krang->getBodyNode("Base");
   for(int i=0; i<nBodies; i++){
     if(i==1 || i==2) continue; // Skip wheels
     b = krang->getBodyNode(i);
@@ -162,10 +113,18 @@ void getSimple(SkeletonPtr threeDOF, SkeletonPtr krang)
   cout << "ixx: " << iBody(0,0) << ", iyy: " << iBody(1,1) << ", izz: " << iBody(2,2) << endl;
   cout << "ixy: " << iBody(0,1) << ", ixz: " << iBody(0,2) << ", iyz: " << iBody(1,2) << endl;
 
-  //Update 3DOF state
-  // TO DO: UPDATE 3DOF DQbody1 WITH DCOM
-  
+  // Update 3DOF state
+  // get positions
+  Eigen::Matrix3d baseRot = krang->getBodyNode("Base")->getTransform().rotation();
+  baseRot = baseRot*rot.transpose();
+  Eigen::AngleAxisd aa(baseRot);
+  Eigen::Matrix<double, 8, 1> q, dq;
+  q << aa.angle()*aa.axis(), krang->getPositions().segment(3, 5);
+  threeDOF->setPositions(q);
 
+  // TODO: When joints are unlocked qBody1 of the 3DOF (= dth = COM angular speed) is not the same as qBody1 of the full robot
+  dq << krang->getVelocities().head(8);
+  threeDOF->setVelocities(dq);
 }
 
 
@@ -181,21 +140,21 @@ SkeletonPtr create3DOF_URDF(SkeletonPtr krang)
   // Eigen::Matrix<double, 19, 1> qInit;
   // qInit << -M_PI/4, -4.588, 0.0, 0.0, 0.0548, -1.0253, 0.0, -2.1244, -1.0472, 1.5671, 0.0, -0.0548, 1.0253, 0.0, 2.1244, 1.0472, 0.0037, 0.0;
   // qInit << krang->getPositions();
-  getSimple(threeDOF, krang);   
+//   getSimple(threeDOF, krang);   
   
   threeDOF->getJoint(0)->setDampingCoefficient(0, 0.5);
   threeDOF->getJoint(1)->setDampingCoefficient(0, 0.5);
 
-  // Get it into a useful configuration
-  double psiInit = 0, qBody1Init = 0;
-  Eigen::Transform<double, 3, Eigen::Affine> baseTf = Eigen::Transform<double, 3, Eigen::Affine>::Identity();
-  // RotX(pi/2)*RotY(-pi/2+psi)*RotX(-qBody1)
-  baseTf.prerotate(Eigen::AngleAxisd(-qBody1Init,Eigen::Vector3d::UnitX())).prerotate(Eigen::AngleAxisd(-M_PI/2+psiInit,Eigen::Vector3d::UnitY())).prerotate(Eigen::AngleAxisd(M_PI/2, Eigen::Vector3d::UnitX()));
-  Eigen::AngleAxisd aa(baseTf.matrix().block<3,3>(0,0));
-  Eigen::Matrix<double, 8, 1> q;
-//  q << 1.2092, -1.2092, -1.2092, 0, 0, 0.28, 0, 0;
-  q << aa.angle()*aa.axis(), 0, 0, 0.28, 0, 0;
-  threeDOF->setPositions(q);
+//   // Get it into a useful configuration
+//   double psiInit = 0, qBody1Init = 0;
+//   Eigen::Transform<double, 3, Eigen::Affine> baseTf = Eigen::Transform<double, 3, Eigen::Affine>::Identity();
+//   // RotX(pi/2)*RotY(-pi/2+psi)*RotX(-qBody1)
+//   baseTf.prerotate(Eigen::AngleAxisd(-qBody1Init,Eigen::Vector3d::UnitX())).prerotate(Eigen::AngleAxisd(-M_PI/2+psiInit,Eigen::Vector3d::UnitY())).prerotate(Eigen::AngleAxisd(M_PI/2, Eigen::Vector3d::UnitX()));
+//   Eigen::AngleAxisd aa(baseTf.matrix().block<3,3>(0,0));
+//   Eigen::Matrix<double, 8, 1> q;
+// //  q << 1.2092, -1.2092, -1.2092, 0, 0, 0.28, 0, 0;
+//   q << aa.angle()*aa.axis(), 0, 0, 0.28, 0, 0;
+//   threeDOF->setPositions(q);
 
   return threeDOF;
 }
@@ -223,7 +182,19 @@ class MyWindow : public dart::gui::SimWindow
       setWorld(world);
       mkrang = world->getSkeleton("krang");
       m3DOF = create3DOF_URDF(mkrang);
+      world3dof = std::make_shared<World>();
+      world3dof->addSkeleton(m3DOF);
+      getSimple(m3DOF, mkrang); 
       qInit = m3DOF->getPositions();
+      // double psiInit = 0, qBody1Init = 0;
+      // Eigen::Transform<double, 3, Eigen::Affine> baseTf = Eigen::Transform<double, 3, Eigen::Affine>::Identity();
+      // // RotX(pi/2)*RotY(-pi/2+psi)*RotX(-qBody1)
+      // baseTf.prerotate(Eigen::AngleAxisd(-qBody1Init,Eigen::Vector3d::UnitX())).prerotate(Eigen::AngleAxisd(-M_PI/2+psiInit,Eigen::Vector3d::UnitY())).prerotate(Eigen::AngleAxisd(M_PI/2, Eigen::Vector3d::UnitX()));
+      // Eigen::AngleAxisd aa(baseTf.matrix().block<3,3>(0,0));
+      // qInit << aa.angle()*aa.axis(), 0, 0, 0.28, 0, 0;
+      // m3DOF->setPositions(qInit);
+
+
       psi = 0; // Heading Angle
       steps = 0;
       mpc_steps = -1; 
@@ -239,9 +210,7 @@ class MyWindow : public dart::gui::SimWindow
       computeDDPTrajectory();
       cout << "10" << endl;
 
-      world3dof = std::make_shared<World>();
-      world3dof->addSkeleton(m3DOF);
-
+      
     }
 
     void computeDDPTrajectory() {
@@ -297,7 +266,9 @@ class MyWindow : public dart::gui::SimWindow
 
       // Initial state th, dth, x, dx, desired state, initial control sequence
 
-      State x0 = getCurrentState();       
+      State x0 = getCurrentState();
+      x0 << 0, 0, 0, 0, 0, 0, 0, 0; 
+      cout << x0 << endl;
       Dynamics::State xf; xf << 2, 0, 0, 0, 0, 0, 0.01, 5;
       Dynamics::ControlTrajectory u = Dynamics::ControlTrajectory::Zero(2, time_steps);
 
@@ -320,8 +291,11 @@ class MyWindow : public dart::gui::SimWindow
       // initialize DDP for trajectory planning
       DDP_Opt trej_ddp (mpc_dt, time_steps, max_iterations, &logger, verbose);
 
+      cout << "9h" << endl;
       // Get initial trajectory from DDP
       OptimizerResult<Dynamics> DDP_traj = trej_ddp.run(x0, u, *ddp_dyn, cp_cost, cp_terminal_cost);
+
+      cout << "9i" << endl;
 
       ddp_state_traj = DDP_traj.state_trajectory;
       ddp_ctl_traj = DDP_traj.control_trajectory;
@@ -364,6 +338,7 @@ class MyWindow : public dart::gui::SimWindow
     {
       steps++;
 
+      getSimple(m3DOF, mkrang);
       State cur_state = getCurrentState(); 
 
       // MPC DDP RECEDING HORIZON CALCULATION
@@ -434,7 +409,7 @@ class MyWindow : public dart::gui::SimWindow
       }
       mForces(0) = tau_L;
       mForces(1) = tau_R;
-      const vector<size_t > index{6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24};
+      const vector<size_t > index{6, 7};
       mkrang->setForces(index, mForces);
 
       
@@ -466,7 +441,7 @@ class MyWindow : public dart::gui::SimWindow
     int mpc_steps;
     double mpc_dt;
 
-    Eigen::Matrix<double, 19, 1> mForces;   
+    Eigen::Matrix<double, 2, 1> mForces;   
    
     ofstream outFile; 
 
@@ -609,14 +584,14 @@ dart::dynamics::SkeletonPtr createKrang() {
   Eigen::Matrix<double, 25, 1> q(q_vec.data());
   
   // Initializing the configuration
-  file = ifstream("/home/krang/dart/Unification/10d-3DHighLevelControllerC-2Ddart_Unification/examples/3dofddp_original/overwriteInitPose.txt");
-  assert(file.is_open());
-  file.getline(line, 1024);
-  stream = std::istringstream(line);
-  i = 0;
-  while((i < 25) && (stream >> newDouble)) q(i++) = newDouble;
-  file.close();
-
+  // file = ifstream("/home/krang/dart/Unification/10d-3DHighLevelControllerC-2Ddart_Unification/examples/3dofddp_original/overwriteInitPose.txt");
+  // assert(file.is_open());
+  // file.getline(line, 1024);
+  // stream = std::istringstream(line);
+  // i = 0;
+  // while((i < 25) && (stream >> newDouble)) q(i++) = newDouble;
+  // file.close();
+  q(3) = 0.0; q(4) = 0.0; q(6) = 0.0; q(7) = 0.0; 
   krang->setPositions(q);
   int joints = krang->getNumJoints();
   for(int i=3; i < joints; i++) {

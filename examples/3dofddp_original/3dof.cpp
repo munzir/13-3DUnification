@@ -108,10 +108,10 @@ void getSimple(SkeletonPtr& threeDOF, SkeletonPtr& krang)
   threeDOF->getBodyNode("Base")->setMass(mBody);
 
   // Print them out
-  cout << "mass: " << mBody << endl;
-  cout << "COM: " << bodyCOM(0) << ", " << bodyCOM(1) << ", " << bodyCOM(2) << endl;
-  cout << "ixx: " << iBody(0,0) << ", iyy: " << iBody(1,1) << ", izz: " << iBody(2,2) << endl;
-  cout << "ixy: " << iBody(0,1) << ", ixz: " << iBody(0,2) << ", iyz: " << iBody(1,2) << endl;
+  // cout << "mass: " << mBody << endl;
+  // cout << "COM: " << bodyCOM(0) << ", " << bodyCOM(1) << ", " << bodyCOM(2) << endl;
+  // cout << "ixx: " << iBody(0,0) << ", iyy: " << iBody(1,1) << ", izz: " << iBody(2,2) << endl;
+  // cout << "ixy: " << iBody(0,1) << ", ixz: " << iBody(0,2) << ", iyz: " << iBody(1,2) << endl;
 
   // Update 3DOF state
   // get positions
@@ -123,7 +123,7 @@ void getSimple(SkeletonPtr& threeDOF, SkeletonPtr& krang)
   threeDOF->setPositions(q);
 
   // TODO: When joints are unlocked qBody1 of the 3DOF (= dth = COM angular speed) is not the same as qBody1 of the full robot
-  dq << krang->getVelocities().head(8);
+  dq << rot*krang->getVelocities().head(3), rot*krang->getVelocities().segment(3, 3), krang->getVelocities().segment(6, 2);
   threeDOF->setVelocities(dq);
 }
 
@@ -403,9 +403,14 @@ class MyWindow : public dart::gui::SimWindow
         tau_L = -0.5*(tau_1+tau_0);
         tau_R = -0.5*(tau_1-tau_0);
 
-        if(abs(tau_L) > 60 | abs(tau_R) > 60){
+        double tau_lim = 100.0;
+        if(abs(tau_L) > tau_lim | abs(tau_R) > tau_lim){
           cout << "step: " << steps << ", tau_0: " << tau_0 << ", tau_1: " << tau_1 << ", tau_L: " << tau_L << ", tau_R: " << tau_R << endl;
         }
+
+        tau_L = min(tau_lim, max(-tau_lim, tau_L));
+        tau_R = min(tau_lim, max(-tau_lim, tau_R));
+
       }
       mForces(0) = tau_L;
       mForces(1) = tau_R;
@@ -597,6 +602,10 @@ dart::dynamics::SkeletonPtr createKrang() {
   for(int i=3; i < joints; i++) {
     krang->getJoint(i)->setActuatorType(dart::dynamics::Joint::ActuatorType::LOCKED);
   }
+
+
+  krang->getJoint(0)->setDampingCoefficient(0, 0.5);
+  krang->getJoint(1)->setDampingCoefficient(0, 0.5);
 
   return krang;
 }
